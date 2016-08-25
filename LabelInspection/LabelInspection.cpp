@@ -1,3 +1,19 @@
+/* *************************************************************************************************
+* FrameGrab  - Created: 08/11/2016  8/11/2016 3:25:59 PM
+* Creator Robert K Young - rkyoung@sonic.net
+* ChangeLog:
+* 0.0.1 - 8/11/2016 3:32:33 PM - Initial Version
+* 0.0.2 - 8/12/2016 5:22:19 PM - Filled in skeleton, corrected typos in code copied, and made added
+*		  code Unicode  complaint.
+* 0.0.3 - 8/14/2016 2:34:38 PM - Failed attempt to add functionality
+* 0.0.4 - 8/15/2016 4:22:15 PM - Added capture file name based on date/time
+* 0.1.0 - 8/16/2016 3:38:58 PM - First beta version with basic functionality
+* 0.2.0 - 8/23/2016 1:36:01 PM - Incorporated OpenCV
+//**************************************************************************************************/
+
+
+
+// --------------------------------------------------------------------
 // LabelInspection.cpp : Defines the entry point for the application.
 //
 
@@ -10,8 +26,33 @@
 #include <time.h>
 #include <wchar.h>
 #include <cwchar>
+#include <dshow.h>
+#include <vector>
+
+// OpenCV
+#include "opencv2\core\core.hpp"
+#include "opencv2\imgproc\imgproc.hpp"
+#include "opencv2\imgcodecs\imgcodecs.hpp"
+#include "opencv2\highgui\highgui.hpp"
+#include <iostream>
+
+#define CANERA_WIDTH 1288 
+#define CANERA_HEIGHT 964 
+
+using namespace cv;
+using namespace std;
+
+#define BLUE    0x0001
+#define GREEN   0x0002
+#define RED     0x0004
+#define GRAY    0x0007	
 
 //Remember to Link to vfw32 Library, gdi32 Library  
+
+#define BLUE    0x0001
+#define GREEN   0x0002
+#define RED     0x0004
+#define GRAY    0x0007	
 
 // Contributing Source Used: http://www.dreamincode.net/forums/topic/193519-win32-webcam-program/
 //
@@ -24,6 +65,13 @@ LPCTSTR szAppName = L"FrameGrab";
 LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
 void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
+void Get_DeviceInfo();
+int enum_devices();
+void process_filter(IBaseFilter *pBaseFilter);
+HRESULT CamCaps(IBaseFilter *pBaseFilter);
+void _FreeMediaType(AM_MEDIA_TYPE& mt);
+static void setcolor(unsigned int color);
+
 HWND camhwnd;
 bool bCameraConnected = false;
 HDC hdc;
@@ -67,6 +115,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     // HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_LABELINSPECTION));
 
+	int result;
+	// Get_DeviceInfo();
+	// result = enum_devices();
+
     MSG msg;
 
     // Main message loop:
@@ -80,8 +132,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 	}
     return (int) msg.wParam;
 }
-
-
 
 //
 //  FUNCTION: MyRegisterClass()
@@ -138,9 +188,13 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
 BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 {
    hInst = hInstance; // Store instance handle in our global variable
-   // HWND hwnd = CreateWindow(szAppName, szAppName, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, 0, 0, hInstance, 0);
-   hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
-   // HWND hWnd = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, 0, CW_USEDEFAULT, 0, nullptr, nullptr, hInstance, nullptr);
+
+   // Get the desktop dims and take a little off all four sides
+   int WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
+   int WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+
+   // hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
+   hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, WindowX_Dim, WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWindow)
    {
@@ -182,10 +236,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 		hButtStartCam = CreateWindowEx(0, L"BUTTON", L"Start Camera", WS_CHILD | WS_VISIBLE, 0, 0, 300, 60, hWnd, (HMENU)1, hInstance, 0);
 		hButtStopCam = CreateWindowEx(0, L"BUTTON", L"Stop Camera", WS_CHILD | WS_VISIBLE, 0, 75, 300, 60, hWnd, (HMENU)2, hInstance, 0);
 		hButtGrabFrame = CreateWindowEx(0, L"BUTTON", L"Snaphot", WS_CHILD | WS_VISIBLE, 0, 150, 300, 60, hWnd, (HMENU)3, hInstance, 0);
-		camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 400, 25, 640, 480, hWnd, 0);
-		bCameraConnected = false;
+		
+		// CANERA_WIDTH 1288 
+		// CANERA_HEIGHT 964 
+
+
+		// Get the desktop dims and take a little off all four sides
+		int camWindowX_Dim = (CANERA_WIDTH - (CANERA_WIDTH >> 4));
+		int camWindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+
+		// camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 400, 25, 640, 480, hWnd, 0);
+		camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, CANERA_WIDTH, CANERA_HEIGHT, hWnd, 0);
+		// bCameraConnected = false;
 		// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-		if (!bCameraConnected)
+		// if (!bCameraConnected)
 			bCameraConnected = SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 		break;
 	}
@@ -207,13 +271,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			// *******************************************************
 			case 1:
 			{
-				ShowWindow(camhwnd, SW_SHOW);
+				
 				// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-				if (!bCameraConnected)
+				// if (!bCameraConnected)
 					bCameraConnected = SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 				SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
 				SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
 				SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
+				ShowWindow(camhwnd, SW_SHOW);
 				break;
 			}
 
@@ -450,4 +515,234 @@ PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp)
 	pbmi->bmiHeader.biClrImportant = 0;
 
 	return pbmi; //return BITMAPINFO
+}
+
+
+HRESULT EnumerateDevices(REFGUID category, IEnumMoniker **ppEnum)
+{
+	// Create the System Device Enumerator.
+	ICreateDevEnum *pDevEnum;
+	HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL,
+		CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDevEnum));
+
+	if (SUCCEEDED(hr))
+	{
+		// Create an enumerator for the category.
+		hr = pDevEnum->CreateClassEnumerator(category, ppEnum, 0);
+		if (hr == S_FALSE)
+		{
+			hr = VFW_E_NOT_FOUND;  // The category is empty. Treat as an error.
+		}
+		pDevEnum->Release();
+	}
+	return hr;
+}
+
+void Get_DeviceInfo()
+{
+	HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	if (SUCCEEDED(hr))
+	{
+		IEnumMoniker *pEnum;
+
+		hr = EnumerateDevices(CLSID_VideoInputDeviceCategory, &pEnum);
+		if (SUCCEEDED(hr))
+		{
+			// DisplayDeviceInformation(pEnum);
+			pEnum->Release();
+		}
+		hr = EnumerateDevices(CLSID_AudioInputDeviceCategory, &pEnum);
+		if (SUCCEEDED(hr))
+		{
+			// DisplayDeviceInformation(pEnum);
+			pEnum->Release();
+		}
+		CoUninitialize();
+	}
+}
+
+// **************************************************************************************
+
+static void setcolor(unsigned int color)
+{
+	HANDLE hCon = GetStdHandle(STD_OUTPUT_HANDLE);
+	SetConsoleTextAttribute(hCon, color | FOREGROUND_INTENSITY);
+}
+
+void _FreeMediaType(AM_MEDIA_TYPE& mt)
+{
+	if (mt.cbFormat != 0)
+	{
+		CoTaskMemFree((PVOID)mt.pbFormat);
+		mt.cbFormat = 0;
+		mt.pbFormat = NULL;
+	}
+	if (mt.pUnk != NULL)
+	{
+		// pUnk should not be used.
+		mt.pUnk->Release();
+		mt.pUnk = NULL;
+	}
+}
+
+
+HRESULT CamCaps(IBaseFilter *pBaseFilter)
+{
+	HRESULT hr = 0;
+	vector <IPin*> pins;
+	IEnumPins *EnumPins;
+	pBaseFilter->EnumPins(&EnumPins);
+	pins.clear();
+	for (;;)
+	{
+		IPin *pin;
+		hr = EnumPins->Next(1, &pin, NULL);
+		if (hr != S_OK) { break; }
+		pins.push_back(pin);
+		pin->Release();
+	}
+	EnumPins->Release();
+
+	printf("Device pins number: %zd\n", pins.size());
+
+	PIN_INFO pInfo;
+	for (int i = 0; i<pins.size(); i++)
+	{
+		pins[i]->QueryPinInfo(&pInfo);
+
+		setcolor(RED);
+
+		if (pInfo.dir == 0)
+		{
+			wprintf(L"Pin name: %s \n", pInfo.achName);
+		}
+
+		if (pInfo.dir == 1)
+		{
+			wprintf(L"Pin name: %s \n", pInfo.achName);
+		}
+
+		IEnumMediaTypes *emt = NULL;
+		pins[i]->EnumMediaTypes(&emt);
+
+		AM_MEDIA_TYPE *pmt;
+
+		vector<SIZE> modes;
+		setcolor(GRAY);
+		wprintf(L"Avialable resolutions: %s \n", pInfo.achName);
+		for (;;)
+		{
+			hr = emt->Next(1, &pmt, NULL);
+			if (hr != S_OK) { break; }
+
+			if ((pmt->formattype == FORMAT_VideoInfo) &&
+				//(pmt->subtype == MEDIASUBTYPE_RGB24) &&
+				(pmt->cbFormat >= sizeof(VIDEOINFOHEADER)) &&
+				(pmt->pbFormat != NULL))
+			{
+				VIDEOINFOHEADER *pVIH = (VIDEOINFOHEADER*)pmt->pbFormat;
+				SIZE s;
+				// Get frame size
+				s.cy = pVIH->bmiHeader.biHeight;
+				s.cx = pVIH->bmiHeader.biWidth;
+				// 
+				unsigned int bitrate = pVIH->dwBitRate;
+				modes.push_back(s);
+				// Bits per pixel
+				unsigned int bitcount = pVIH->bmiHeader.biBitCount;
+				REFERENCE_TIME t = pVIH->AvgTimePerFrame; // blocks (100ns) per frame
+				int FPS = floor(10000000.0 / static_cast<double>(t));
+				printf("Size: x=%d\ty=%d\tFPS: %d\t bitrate: %ld\tbit/pixel:%ld\n", s.cx, s.cy, FPS, bitrate, bitcount);
+			}
+			_FreeMediaType(*pmt);
+		}
+		//----------------------------------------------------
+		// 
+		// 
+		// 
+		//----------------------------------------------------
+		modes.clear();
+		emt->Release();
+	}
+
+	pins.clear();
+
+	return S_OK;
+}
+
+/*
+* Do something with the filter. In this sample we just test the pan/tilt properties.
+*/
+void process_filter(IBaseFilter *pBaseFilter)
+{
+	CamCaps(pBaseFilter);
+}
+
+
+/*
+* Enumerate all video devices
+*
+* See also:
+*
+* Using the System Device Enumerator:
+*     http://msdn2.microsoft.com/en-us/library/ms787871.aspx
+*/
+int enum_devices()
+{
+	HRESULT hr;
+	setcolor(GRAY);
+	printf("Enumeraring videoinput devices ...\n");
+
+	// Create the System Device Enumerator.
+	ICreateDevEnum *pSysDevEnum = NULL;
+	hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void **)&pSysDevEnum);
+	if (FAILED(hr))
+	{
+		fprintf(stderr, "Error. Can't create enumerator.\n");
+		return hr;
+	}
+
+	// Obtain a class enumerator for the video input device category.
+	IEnumMoniker *pEnumCat = NULL;
+	hr = pSysDevEnum->CreateClassEnumerator(CLSID_VideoInputDeviceCategory, &pEnumCat, 0);
+
+	if (hr == S_OK)
+	{
+		// Enumerate the monikers.
+		IMoniker *pMoniker = NULL;
+		ULONG cFetched;
+		while (pEnumCat->Next(1, &pMoniker, &cFetched) == S_OK)
+		{
+			IPropertyBag *pPropBag;
+			hr = pMoniker->BindToStorage(0, 0, IID_IPropertyBag, (void **)&pPropBag);
+			if (SUCCEEDED(hr))
+			{
+				// To retrieve the filter's friendly name, do the following:
+				VARIANT varName;
+				VariantInit(&varName);
+				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
+				if (SUCCEEDED(hr))
+				{
+					// Display the name in your UI somehow.
+					setcolor(GREEN);
+					wprintf(L"------------------> %s <------------------\n", varName.bstrVal);
+				}
+				VariantClear(&varName);
+
+				// To create an instance of the filter, do the following:
+				IBaseFilter *pFilter;
+				hr = pMoniker->BindToObject(NULL, NULL, IID_IBaseFilter, (void**)&pFilter);
+
+				process_filter(pFilter);
+
+				//Remember to release pFilter later.
+				pPropBag->Release();
+			}
+			pMoniker->Release();
+		}
+		pEnumCat->Release();
+	}
+	pSysDevEnum->Release();
+
+	return 0;
 }
