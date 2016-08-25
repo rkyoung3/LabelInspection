@@ -1,21 +1,12 @@
 /* *************************************************************************************************
-* FrameGrab  - Created: 08/11/2016  8/11/2016 3:25:59 PM
+* LabelInspection  - Created: 08/23/2016  3:25:59 PM
 * Creator Robert K Young - rkyoung@sonic.net
 * ChangeLog:
-* 0.0.1 - 8/11/2016 3:32:33 PM - Initial Version
-* 0.0.2 - 8/12/2016 5:22:19 PM - Filled in skeleton, corrected typos in code copied, and made added
-*		  code Unicode  complaint.
-* 0.0.3 - 8/14/2016 2:34:38 PM - Failed attempt to add functionality
-* 0.0.4 - 8/15/2016 4:22:15 PM - Added capture file name based on date/time
-* 0.1.0 - 8/16/2016 3:38:58 PM - First beta version with basic functionality
-* 0.2.0 - 8/23/2016 1:36:01 PM - Incorporated OpenCV
+* 0.0.1 - 8/23/2016 3:32:33 PM - Initial Version
+* 0.0.2 - 8/24/2016 4:22:15 PM - Added capture file name based on date/time
+* 0.1.0 - 8/15/2016 3:38:58 PM - First beta version with basic functionality
+* 0.2.0 - 8/25/2016 1:36:01 PM - Incorporated OpenCV
 //**************************************************************************************************/
-
-
-
-// --------------------------------------------------------------------
-// LabelInspection.cpp : Defines the entry point for the application.
-//
 
 #include "stdafx.h"
 #include "LabelInspection.h"
@@ -36,8 +27,13 @@
 #include "opencv2\highgui\highgui.hpp"
 #include <iostream>
 
+#ifdef POINT_GREY_CAMERA
 #define CANERA_WIDTH 1288 
 #define CANERA_HEIGHT 964 
+#else
+#define CANERA_WIDTH 1024 
+#define CANERA_HEIGHT 768 
+#endif
 
 using namespace cv;
 using namespace std;
@@ -72,8 +68,10 @@ HRESULT CamCaps(IBaseFilter *pBaseFilter);
 void _FreeMediaType(AM_MEDIA_TYPE& mt);
 static void setcolor(unsigned int color);
 
-HWND camhwnd;
-bool bCameraConnected = false;
+HWND mli_CameraHwnd;
+int mli_WindowX_Dim;
+int mli_WindowY_Dim;
+bool mil_bCameraConnected = false;
 HDC hdc;
 HDC hdcMem;
 PAINTSTRUCT ps;
@@ -115,7 +113,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     // HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_LABELINSPECTION));
 
-	int result;
+	// int result;
 	// Get_DeviceInfo();
 	// result = enum_devices();
 
@@ -190,11 +188,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // Store instance handle in our global variable
 
    // Get the desktop dims and take a little off all four sides
-   int WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
-   int WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+   mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
+   mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
 
    // hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
-   hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, WindowX_Dim, WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
+   hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWindow)
    {
@@ -242,15 +240,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 
 		// Get the desktop dims and take a little off all four sides
-		int camWindowX_Dim = (CANERA_WIDTH - (CANERA_WIDTH >> 4));
-		int camWindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+		int camWindowX_Dim = ((CANERA_WIDTH) - (CANERA_WIDTH >> 4));
+		int camWindowY_Dim = ((CANERA_HEIGHT) - (CANERA_HEIGHT >> 4));
+
+		// mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
+		// mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
 
 		// camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 400, 25, 640, 480, hWnd, 0);
-		camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, CANERA_WIDTH, CANERA_HEIGHT, hWnd, 0);
+		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, camWindowX_Dim, camWindowY_Dim, hWnd, 0);
+		// mli_CameraHwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, (CANERA_WIDTH > 1), (CANERA_HEIGHT > 1), hWnd, 0);
+
 		// bCameraConnected = false;
 		// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-		// if (!bCameraConnected)
-			bCameraConnected = SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 		break;
 	}
 
@@ -261,83 +263,75 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             // Parse the menu selections:
             switch (wmId)
             {
-            case IDM_ABOUT:
-                DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-                break;
-            case IDM_EXIT:
-                DestroyWindow(hWnd);
-                break;
+				case IDM_ABOUT:
+					DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
+					break;
+				case IDM_EXIT:
+					DestroyWindow(hWnd);
+					break;
 
-			// *******************************************************
-			case 1:
-			{
-				
-				// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-				// if (!bCameraConnected)
-					bCameraConnected = SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-				SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
-				SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-				SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
-				ShowWindow(camhwnd, SW_SHOW);
-				break;
-			}
-
-			case 2:
-			{
-				ShowWindow(camhwnd, SW_HIDE);
-				SendMessage(camhwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-				bCameraConnected = false;
-				break;
-			}
-
-			case 3:
-			{
-				//Grab a Frame
-				SendMessage(camhwnd, WM_CAP_GRAB_FRAME, 0, 0);
-				//Copy the frame we have just grabbed to the clipboard
-				SendMessage(camhwnd, WM_CAP_EDIT_COPY, 0, 0);
-				//Copy the clipboard image data to a HBITMAP object called hbm
-				hdc = BeginPaint(camhwnd, &ps);
-				hdcMem = CreateCompatibleDC(hdc);
-
-				if (hdcMem != NULL)
+				// *******************************************************
+				case 1:
 				{
-					if (OpenClipboard(camhwnd))
-					{
-						hbm = (HBITMAP)GetClipboardData(CF_BITMAP);
-						SelectObject(hdcMem, hbm);
-						GetClientRect(camhwnd, &rc);
-						CloseClipboard();
-					}
+				
+					// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+					ShowWindow(mli_CameraHwnd, SW_SHOW);
+					break;
 				}
 
-				//Save hbm to a .bmp file with date/time based name
-				PBITMAPINFO pbi = CreateBitmapInfoStruct(hWnd, hbm);
+				case 2:
+				{
+					ShowWindow(mli_CameraHwnd, SW_HIDE);
+					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+					mil_bCameraConnected = false;
+					break;
+				}
 
-				__time64_t long_time;
-				struct tm newtime;
-				wchar_t buffer[80];
+				case 3:
+				{
+					//Grab a Frame
+					SendMessage(mli_CameraHwnd, WM_CAP_GRAB_FRAME, 0, 0);
+					//Copy the frame we have just grabbed to the clipboard
+					SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
+					//Copy the clipboard image data to a HBITMAP object called hbm
+					hdc = BeginPaint(mli_CameraHwnd, &ps);
+					hdcMem = CreateCompatibleDC(hdc);
 
-				_time64(&long_time);
-				_localtime64_s(&newtime, &long_time); // Convert to local time.
-				int len = swprintf_s(buffer, 80, L"FG_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
+					if (hdcMem != NULL)
+					{
+						if (OpenClipboard(mli_CameraHwnd))
+						{
+							hbm = (HBITMAP)GetClipboardData(CF_BITMAP);
+							SelectObject(hdcMem, hbm);
+							GetClientRect(mli_CameraHwnd, &rc);
+							CloseClipboard();
+						}
+					}
 
-				CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem);
-				SendMessage(camhwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-				SendMessage(camhwnd, WM_CAP_SET_SCALE, true, 0);
-				SendMessage(camhwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-				SendMessage(camhwnd, WM_CAP_SET_PREVIEW, true, 0);
-				break;
-			}
-			
+					//Save hbm to a .bmp file with date/time based name
+					PBITMAPINFO pbi = CreateBitmapInfoStruct(hWnd, hbm);
 
-			// *****************************************************
+					__time64_t long_time;
+					struct tm newtime;
+					wchar_t buffer[80];
 
+					_time64(&long_time);
+					_localtime64_s(&newtime, &long_time); // Convert to local time.
+					int len = swprintf_s(buffer, 80, L"FG_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
 
-            // default:
-            //    return DefWindowProc(hWnd, message, wParam, lParam);
-            }
-        }
+					CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem);
+					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+					break;
+				} // End case 3:
+			} // End switch (wmId)
+		} // End case WM_COMMAND:
         break;
     case WM_PAINT:
         {
@@ -482,7 +476,7 @@ PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp)
 	// data structures.)
 	if (cClrBits != 24)
 	{
-		pbmi = (PBITMAPINFO)LocalAlloc(LPTR, sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * (1 << cClrBits));
+		pbmi = (PBITMAPINFO)LocalAlloc(LPTR, sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * ((int)(1 << cClrBits)));
 	}
 	else // There is no RGBQUAD array for the 24-bit-per-pixel format.
 		pbmi = (PBITMAPINFO)LocalAlloc(LPTR, sizeof(BITMAPINFOHEADER));
