@@ -16,6 +16,24 @@
 #include <malloc.h>
 #include <memory.h>
 #include <tchar.h>
+#include <Strsafe.h> 
+#include <stdio.h>
+#include <windows.h>  
+#include <wingdi.h>
+#include <vfw.h>  
+#include <time.h>
+#include <wchar.h>
+#include <cwchar>
+#include <dshow.h>
+#include <vector>
 
+// OpenCV
+#include "opencv2\core\core.hpp"
+#include "opencv2\imgproc\imgproc.hpp"
+#include "opencv2\imgcodecs\imgcodecs.hpp"
+#include "opencv2\highgui\highgui.hpp"
+#include <iostream>
+#include "ProcessImage.h"
+#include "LabelInspection.h"
 
 // TODO: reference additional headers your program requires here

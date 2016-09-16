@@ -30,12 +30,18 @@
     <ClInclude Include="LabelInspection.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ProcessImage.h">
+      <Filter>Resource Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="stdafx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="LabelInspection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ProcessImage.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -49,6 +55,12 @@
       <Filter>Resource Files</Filter>
     </Image>
     <Image Include="LabelInspection.ico">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Sample1.bmp">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="Sample2.bmp">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>

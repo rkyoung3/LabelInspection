@@ -6,37 +6,29 @@
 * 0.0.2 - 8/24/2016 4:22:15 PM - Added capture file name based on date/time
 * 0.1.0 - 8/15/2016 3:38:58 PM - First beta version with basic functionality
 * 0.2.0 - 8/25/2016 1:36:01 PM - Incorporated OpenCV
+* 0.3.0 - 9/01/2016 5:21:43 PM - Began implementing MediaFoundation calls to control camera.
+* 0.4.0 - 9/13/2016 9:11:15 AM - Implementation of MediaFoundation failed, moving on to processing image
 //**************************************************************************************************/
 
 #include "stdafx.h"
-#include "LabelInspection.h"
-#include <Strsafe.h> 
-#include <stdio.h>
-#include <windows.h>  
-#include <vfw.h>  
-#include <time.h>
-#include <wchar.h>
-#include <cwchar>
-#include <dshow.h>
-#include <vector>
 
-// OpenCV
-#include "opencv2\core\core.hpp"
-#include "opencv2\imgproc\imgproc.hpp"
-#include "opencv2\imgcodecs\imgcodecs.hpp"
-#include "opencv2\highgui\highgui.hpp"
-#include <iostream>
+#define POINT_GREY_CAMERA 1
 
 #ifdef POINT_GREY_CAMERA
 #define CANERA_WIDTH 1288 
 #define CANERA_HEIGHT 964 
 #else
-#define CANERA_WIDTH 1024 
-#define CANERA_HEIGHT 768 
+#define CANERA_WIDTH 1280 
+#define CANERA_HEIGHT 720 
 #endif
+
 
 using namespace cv;
 using namespace std;
+
+namespace std { 
+#include <cstdlib> 
+};
 
 #define BLUE    0x0001
 #define GREEN   0x0002
@@ -50,37 +42,51 @@ using namespace std;
 #define RED     0x0004
 #define GRAY    0x0007	
 
-// Contributing Source Used: http://www.dreamincode.net/forums/topic/193519-win32-webcam-program/
-//
+#define MAX_LOADSTRING 100
+#define MAX_CAMERAS 4
 
-LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
+
+// Contributing Source Used: http://www.dreamincode.net/forums/topic/193519-win32-webcam-program/
+
 HWND hWindow;
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
-void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
+bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
 LPCTSTR szAppName = L"FrameGrab";
-LRESULT CALLBACK WindowProc(HWND, UINT, WPARAM, LPARAM);
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
-void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
+// void drawImage(HDC screen);
+void drawImage(HDC screen, HDC *imageDC);
 void Get_DeviceInfo();
 int enum_devices();
-void process_filter(IBaseFilter *pBaseFilter);
-HRESULT CamCaps(IBaseFilter *pBaseFilter);
+// void process_filter(IBaseFilter *pBaseFilter);
+void process_filter(IBaseFilter *pBaseFilter, int iIndex);
+HRESULT CamCaps(IBaseFilter *pBaseFilter, int iIndex);
+// HRESULT CamCaps(IBaseFilter *pBaseFilter);
 void _FreeMediaType(AM_MEDIA_TYPE& mt);
 static void setcolor(unsigned int color);
+// void loadImage(const char* pathname);
+void loadImage(const char* pathname, HDC *imageDC, HBITMAP *imageBmp);
+void cleanUpImage(HDC *imageDC, HBITMAP *imageBmp);
+BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPalette);
 
 HWND mli_CameraHwnd;
 int mli_WindowX_Dim;
 int mli_WindowY_Dim;
 bool mil_bCameraConnected = false;
-HDC hdc;
+wchar_t* mfg_CameraNames[MAX_CAMERAS];
+bool mil_bDrawImage = false;
+wchar_t mil_DbgMesg[MAX_PATH];
+// HDC hdc;
 HDC hdcMem;
+HGDIOBJ mil_hgdiOld;
 PAINTSTRUCT ps;
 HBITMAP hbm;
 RECT rc;
-
-
-
-#define MAX_LOADSTRING 100
+HDC         WorkimageDC;        // the DC to hold our image
+HBITMAP     image0Bmp;       // the actual bitmap which contains the image (will be used as display and to draw on)
+HBITMAP     image1Bmp;       // the actual bitmap which contains the image (will be what we restore the display with to erase anything or everything)
+HPALETTE      hPalette;
+HBITMAP     imageBmpOld;    // the DC's old bitmap (for cleanup)
+HBITMAP     OriginalimageBmp;
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -88,7 +94,7 @@ WCHAR szTitle[MAX_LOADSTRING];                  // The title bar text
 WCHAR szWindowClass[MAX_LOADSTRING];            // the main window class name
 
 // Forward declarations of functions included in this code module:
-ATOM                MyRegisterClass(HINSTANCE hInstance);
+ATOM                li_RegisterClass(HINSTANCE hInstance);
 BOOL                InitInstance(HINSTANCE, int);
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK    About(HWND, UINT, WPARAM, LPARAM);
@@ -100,10 +106,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     // TODO: Place code here.
 
+	// int result;
+	// Get_DeviceInfo();
+	int result = enum_devices();
+
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
     LoadStringW(hInstance, IDC_LABELINSPECTION, szWindowClass, MAX_LOADSTRING);
-    MyRegisterClass(hInstance);
+	li_RegisterClass(hInstance);
 
     // Perform application initialization:
     if (!InitInstance (hInstance, nCmdShow))
@@ -111,11 +121,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
         return FALSE;
     }
 
-    // HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_LABELINSPECTION));
+    HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_LABELINSPECTION));
 
-	// int result;
-	// Get_DeviceInfo();
-	// result = enum_devices();
 
     MSG msg;
 
@@ -136,7 +143,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 //
 //  PURPOSE: Registers the window class.
 //
-ATOM MyRegisterClass(HINSTANCE hInstance)
+ATOM li_RegisterClass(HINSTANCE hInstance)
 {
     WNDCLASSEXW wcex;
 
@@ -153,22 +160,6 @@ ATOM MyRegisterClass(HINSTANCE hInstance)
     wcex.lpszMenuName   = MAKEINTRESOURCEW(IDC_LABELINSPECTION);
     wcex.lpszClassName  = szWindowClass;
     wcex.hIconSm        = LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
-
-	/***********************************************************************
-
-	wc.style = CS_HREDRAW | CS_VREDRAW;
-	wc.lpfnWndProc = WindowProc;
-	wc.cbClsExtra = 0;
-	wc.cbWndExtra = 0;
-	wc.hInstance = hInstance;
-	wc.hIcon = LoadIcon(GetModuleHandle(NULL), IDI_APPLICATION);
-	wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-	wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-	wc.lpszMenuName = NULL;
-	wc.lpszClassName = szAppName;
-	RegisterClass(&wc);
-
-	**********************************************************************/
 
     return RegisterClassExW(&wcex);
 }
@@ -188,8 +179,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // Store instance handle in our global variable
 
    // Get the desktop dims and take a little off all four sides
-   mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
-   mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+   mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN)); // -(GetSystemMetrics(SM_CXSCREEN) >> 5));
+   mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN)); // -(GetSystemMetrics(SM_CYSCREEN) >> 5));
+
+   if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating MainWindow: %04d x %04d\n", mli_WindowX_Dim, mli_WindowY_Dim) > 0))
+	   OutputDebugString(mil_DbgMesg);
 
    // hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
    hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
@@ -226,33 +220,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     switch (message)
     {
 	case WM_CTLCOLORSTATIC:
-		SetBkMode(hdc, TRANSPARENT);
+		SetBkMode(hdcMem, TRANSPARENT);
 		return (LRESULT)CreateSolidBrush(0xFFFFFF);
 
 	case WM_CREATE:
 	{
 		hButtStartCam = CreateWindowEx(0, L"BUTTON", L"Start Camera", WS_CHILD | WS_VISIBLE, 0, 0, 300, 60, hWnd, (HMENU)1, hInstance, 0);
 		hButtStopCam = CreateWindowEx(0, L"BUTTON", L"Stop Camera", WS_CHILD | WS_VISIBLE, 0, 75, 300, 60, hWnd, (HMENU)2, hInstance, 0);
-		hButtGrabFrame = CreateWindowEx(0, L"BUTTON", L"Snaphot", WS_CHILD | WS_VISIBLE, 0, 150, 300, 60, hWnd, (HMENU)3, hInstance, 0);
-		
-		// CANERA_WIDTH 1288 
-		// CANERA_HEIGHT 964 
+		hButtGrabFrame = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 150, 300, 60, hWnd, (HMENU)3, hInstance, 0);
 
+		DWORD dwStyle = WS_CHILD;
 
-		// Get the desktop dims and take a little off all four sides
-		int camWindowX_Dim = ((CANERA_WIDTH) - (CANERA_WIDTH >> 4));
-		int camWindowY_Dim = ((CANERA_HEIGHT) - (CANERA_HEIGHT >> 4));
+		if((mli_WindowX_Dim - 300) < CANERA_WIDTH )
+			dwStyle |= WS_HSCROLL;
 
-		// mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN) - (GetSystemMetrics(SM_CXSCREEN) >> 4));
-		// mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN) - (GetSystemMetrics(SM_CYSCREEN) >> 4));
+		if ( mli_WindowY_Dim  < CANERA_HEIGHT )
+			dwStyle |= WS_VSCROLL;
 
-		// camhwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 400, 25, 640, 480, hWnd, 0);
-		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, camWindowX_Dim, camWindowY_Dim, hWnd, 0);
-		// mli_CameraHwnd = capCreateCaptureWindow(L"camera window", WS_CHILD, 301, 25, (CANERA_WIDTH > 1), (CANERA_HEIGHT > 1), hWnd, 0);
+		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, CANERA_WIDTH, CANERA_HEIGHT, hWnd, 0);
 
-		// bCameraConnected = false;
-		// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating Camera Window: %04d x %04d\n", CANERA_WIDTH, CANERA_HEIGHT) > 0))
+			OutputDebugString(mil_DbgMesg);
+
+		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
 		break;
 	}
 
@@ -273,8 +263,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				// *******************************************************
 				case 1:
 				{
-				
 					// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
+					// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+					// SendMessage(mfg_CameraHwnd, WM_CAP_DRIVER_CONNECT, mfg_CurrentCamera, 0);
 					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
@@ -298,7 +289,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 					//Copy the frame we have just grabbed to the clipboard
 					SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
 					//Copy the clipboard image data to a HBITMAP object called hbm
-					hdc = BeginPaint(mli_CameraHwnd, &ps);
+					HDC hdc = BeginPaint(mli_CameraHwnd, &ps);
 					hdcMem = CreateCompatibleDC(hdc);
 
 					if (hdcMem != NULL)
@@ -321,13 +312,32 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 					_time64(&long_time);
 					_localtime64_s(&newtime, &long_time); // Convert to local time.
-					int len = swprintf_s(buffer, 80, L"FG_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
+					int len = swprintf_s(buffer, 80, L"LI_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
 
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: LI_%04d-%02d-%02d_%02d%02d.bmp\n", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+					// if(CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem))
 					CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem);
+					// loadImage("Sample1.bmp", &WorkimageDC, &image1Bmp);
+					// loadImage("Sample1.bmp", &hdc, &image0Bmp);
+					mil_bDrawImage = LoadBitmapFromBMPFile(L"Sample1.bmp", &image0Bmp, &hPalette);
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from LoadBitmapFromBMPFile: %s\n", (mil_bDrawImage ? L"Success":L"Failure")) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+					RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE);
+
+					// UpdateWindow(mli_CameraHwnd);
+					// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+					// SendMessage(mli_CameraHwnd, WM_PAINT, 0, 0);
+					// ProcessImage(buffer);
+					// drawImage(hdc, &WorkimageDC);
+					/*
 					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0); */
 					break;
 				} // End case 3:
 			} // End switch (wmId)
@@ -335,9 +345,35 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     case WM_PAINT:
         {
+			BITMAP bm;
             PAINTSTRUCT ps;
+
+			HBITMAP       hOldBitmap;
+			HPALETTE      hOldPalette;
+
             HDC hdc = BeginPaint(hWnd, &ps);
+			HDC hdcMem = CreateCompatibleDC(hdc);
             // TODO: Add any drawing code that uses hdc here...
+			if (mil_bDrawImage)
+			{
+				HDC hdcCam = BeginPaint(mli_CameraHwnd, &ps);
+				HDC hdcMemCam = CreateCompatibleDC(hdcCam);
+
+				GetObject(image0Bmp, sizeof(BITMAP), &bm);
+				hOldBitmap = (HBITMAP)SelectObject(hdcMemCam, image0Bmp);
+				hOldPalette = SelectPalette(hdcCam, hPalette, FALSE);
+				RealizePalette(hdcCam);
+
+				BitBlt(hdcCam, 0, 0, bm.bmWidth, bm.bmHeight, hdcMemCam, 0, 0, SRCCOPY);
+				SelectObject(hdcMemCam, hOldBitmap);
+				// DeleteObject(hBitmap);
+				SelectPalette(hdcCam, hOldPalette, FALSE);
+				// DeleteObject(hPalette);
+				DeleteDC(hdcMemCam);
+				EndPaint(mli_CameraHwnd, &ps);
+			}
+			// drawImage(hdc, &WorkimageDC);                  // draw our image to our screen DC
+			DeleteDC(hdcMem);
             EndPaint(hWnd, &ps);
         }
         break;
@@ -370,7 +406,7 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
     return (INT_PTR)FALSE;
 }
 
-void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC)
+bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC)
 {
 
 	HANDLE hf;                  // file handle
@@ -381,6 +417,7 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	DWORD cb;                   // incremental count of bytes
 	BYTE *hp;                   // byte pointer
 	DWORD dwTmp;
+	bool bErrorOccured = false;
 
 	pbih = (PBITMAPINFOHEADER)pbi;
 	lpBits = (LPBYTE)GlobalAlloc(GMEM_FIXED, pbih->biSizeImage);
@@ -388,6 +425,7 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	if (!lpBits)
 	{
 		MessageBox(hwnd, L"GlobalAlloc", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Retrieve the color table (RGBQUAD array) and the bits
@@ -395,6 +433,7 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	if (!GetDIBits(hDC, hBMP, 0, (WORD)pbih->biHeight, lpBits, pbi, DIB_RGB_COLORS))
 	{
 		MessageBox(hwnd, L"GetDIBits", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Create the .BMP file.
@@ -403,6 +442,7 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	if (hf == INVALID_HANDLE_VALUE)
 	{
 		MessageBox(hwnd, L"CreateFile", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	hdr.bfType = 0x4d42;  // File type designator "BM" 0x42 = "B" 0x4d = "M"
@@ -417,12 +457,14 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	if (!WriteFile(hf, (LPVOID)&hdr, sizeof(BITMAPFILEHEADER), (LPDWORD)&dwTmp, NULL))
 	{
 		MessageBox(hwnd, L"WriteFileHeader", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Copy the BITMAPINFOHEADER and RGBQUAD array into the file.
 	if (!WriteFile(hf, (LPVOID)pbih, sizeof(BITMAPINFOHEADER) + pbih->biClrUsed * sizeof(RGBQUAD), (LPDWORD)&dwTmp, NULL))
 	{
 		MessageBox(hwnd, L"WriteInfoHeader", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Copy the array of color indices into the .BMP file.
@@ -432,16 +474,19 @@ void CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	if (!WriteFile(hf, (LPSTR)hp, (int)cb, (LPDWORD)&dwTmp, NULL))
 	{
 		MessageBox(hwnd, L"WriteFile", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Close the .BMP file.
 	if (!CloseHandle(hf))
 	{
 		MessageBox(hwnd, L"CloseHandle", L"Error", MB_OK);
+		bErrorOccured = true;
 	}
 
 	// Free memory.
 	GlobalFree((HGLOBAL)lpBits);
+	return bErrorOccured;
 }
 
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp)
@@ -516,8 +561,7 @@ HRESULT EnumerateDevices(REFGUID category, IEnumMoniker **ppEnum)
 {
 	// Create the System Device Enumerator.
 	ICreateDevEnum *pDevEnum;
-	HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL,
-		CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDevEnum));
+	HRESULT hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pDevEnum));
 
 	if (SUCCEEDED(hr))
 	{
@@ -580,11 +624,24 @@ void _FreeMediaType(AM_MEDIA_TYPE& mt)
 }
 
 
-HRESULT CamCaps(IBaseFilter *pBaseFilter)
+
+/*
+* Do something with the filter. In this sample we just test the pan/tilt properties.
+*/
+void process_filter(IBaseFilter *pBaseFilter, int iIndex)
+{
+	CamCaps(pBaseFilter, iIndex);
+}
+
+HRESULT CamCaps(IBaseFilter *pBaseFilter, int iIndex)
 {
 	HRESULT hr = 0;
 	vector <IPin*> pins;
 	IEnumPins *EnumPins;
+	IEnumMediaTypes *emt = NULL;
+	AM_MEDIA_TYPE *pmt;
+	vector<SIZE> modes;
+
 	pBaseFilter->EnumPins(&EnumPins);
 	pins.clear();
 	for (;;)
@@ -597,81 +654,93 @@ HRESULT CamCaps(IBaseFilter *pBaseFilter)
 	}
 	EnumPins->Release();
 
-	printf("Device pins number: %zd\n", pins.size());
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Number of Device pins: %zd\n", pins.size()) > 0))
+		OutputDebugString(mil_DbgMesg);
 
 	PIN_INFO pInfo;
 	for (int i = 0; i<pins.size(); i++)
 	{
 		pins[i]->QueryPinInfo(&pInfo);
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Pin name: %s \n", pInfo.achName) > 0))
+			OutputDebugString(mil_DbgMesg);
 
-		setcolor(RED);
-
-		if (pInfo.dir == 0)
-		{
-			wprintf(L"Pin name: %s \n", pInfo.achName);
-		}
-
-		if (pInfo.dir == 1)
-		{
-			wprintf(L"Pin name: %s \n", pInfo.achName);
-		}
-
-		IEnumMediaTypes *emt = NULL;
 		pins[i]->EnumMediaTypes(&emt);
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Avialable resolutions for: %ls \n", mfg_CameraNames[iIndex]) >= 1))
+			OutputDebugString(mil_DbgMesg);
 
-		AM_MEDIA_TYPE *pmt;
-
-		vector<SIZE> modes;
-		setcolor(GRAY);
-		wprintf(L"Avialable resolutions: %s \n", pInfo.achName);
 		for (;;)
 		{
 			hr = emt->Next(1, &pmt, NULL);
 			if (hr != S_OK) { break; }
 
-			if ((pmt->formattype == FORMAT_VideoInfo) &&
-				//(pmt->subtype == MEDIASUBTYPE_RGB24) &&
-				(pmt->cbFormat >= sizeof(VIDEOINFOHEADER)) &&
-				(pmt->pbFormat != NULL))
+			if ((pmt->formattype == FORMAT_VideoInfo) && (pmt->cbFormat >= sizeof(VIDEOINFOHEADER)) && (pmt->pbFormat != NULL))
 			{
 				VIDEOINFOHEADER *pVIH = (VIDEOINFOHEADER*)pmt->pbFormat;
 				SIZE s;
 				// Get frame size
 				s.cy = pVIH->bmiHeader.biHeight;
 				s.cx = pVIH->bmiHeader.biWidth;
-				// 
 				unsigned int bitrate = pVIH->dwBitRate;
 				modes.push_back(s);
 				// Bits per pixel
 				unsigned int bitcount = pVIH->bmiHeader.biBitCount;
 				REFERENCE_TIME t = pVIH->AvgTimePerFrame; // blocks (100ns) per frame
-				int FPS = floor(10000000.0 / static_cast<double>(t));
-				printf("Size: x=%d\ty=%d\tFPS: %d\t bitrate: %ld\tbit/pixel:%ld\n", s.cx, s.cy, FPS, bitrate, bitcount);
+				int FPS = (int)(floor(10000000.0 / static_cast<double>(t)));
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Size: x=%d\ty=%d\tFPS: %d\t bitrate: %ld\tbit/pixel:%ld\n", s.cx, s.cy, FPS, bitrate, bitcount) >= 1))
+					OutputDebugString(mil_DbgMesg);
 			}
 			_FreeMediaType(*pmt);
 		}
-		//----------------------------------------------------
-		// 
-		// 
-		// 
-		//----------------------------------------------------
 		modes.clear();
 		emt->Release();
 	}
-
 	pins.clear();
-
 	return S_OK;
-}
+}// End CamCaps()
 
-/*
-* Do something with the filter. In this sample we just test the pan/tilt properties.
-*/
-void process_filter(IBaseFilter *pBaseFilter)
+///////////////////////////////
+///////////////////////////////
+// Function to load the image into our DC so we can draw it to the screen
+void loadImage(const char* pathname, HDC *imageDC, HBITMAP *imageBmp)
 {
-	CamCaps(pBaseFilter);
+	*imageDC = CreateCompatibleDC(NULL);     // create an offscreen DC
+
+	*imageBmp = (HBITMAP)LoadImageA(         // load the bitmap from a file
+		NULL,                           // not loading from a module, so this is NULL
+		pathname,                       // the path we're loading from
+		IMAGE_BITMAP,                   // we are loading a bitmap
+		0, 0,                            // don't need to specify width/height
+		LR_DEFAULTSIZE | LR_LOADFROMFILE// use the default bitmap size (whatever the file is), and load it from a file
+	);
+
+	imageBmpOld = (HBITMAP)SelectObject(*imageDC, *imageBmp);  // put the loaded image into our DC
 }
 
+
+///////////////////////////////
+// Function to clean up
+void cleanUpImage(HDC *imageDC, HBITMAP *imageBmp)
+{
+	SelectObject(*imageDC, imageBmpOld);      // put the old bmp back in our DC
+	DeleteObject(*imageBmp);                 // delete the bmp we loaded
+	DeleteDC(*imageDC);                      // delete the DC we created
+}
+
+///////////////////////////////
+///////////////////////////////
+// The function to draw our image to the display (the given DC is the screen DC)
+void drawImage(HDC screen, HDC *imageDC)
+{
+	BitBlt(
+		screen,         // tell it we want to draw to the screen
+		0, 0,            // as position 0,0 (upper-left corner)
+		CANERA_WIDTH,   // width of the rect to draw
+		CANERA_HEIGHT,   // height of the rect
+		*imageDC,        // the DC to get the rect from (our image DC)
+		0, 0,            // take it from position 0,0 in the image DC
+		SRCCOPY         // tell it to do a pixel-by-pixel copy
+	);
+}
 
 /*
 * Enumerate all video devices
@@ -684,15 +753,18 @@ void process_filter(IBaseFilter *pBaseFilter)
 int enum_devices()
 {
 	HRESULT hr;
-	setcolor(GRAY);
-	printf("Enumeraring videoinput devices ...\n");
+	int NumCamerasFound = 0;
+	
 
+	OutputDebugString(L"Enumeraring videoinput devices ...\n");
+
+	CoInitialize(NULL);
 	// Create the System Device Enumerator.
 	ICreateDevEnum *pSysDevEnum = NULL;
 	hr = CoCreateInstance(CLSID_SystemDeviceEnum, NULL, CLSCTX_INPROC_SERVER, IID_ICreateDevEnum, (void **)&pSysDevEnum);
 	if (FAILED(hr))
 	{
-		fprintf(stderr, "Error. Can't create enumerator.\n");
+		OutputDebugString(L"Error. Can't create enumerator.\n");
 		return hr;
 	}
 
@@ -705,30 +777,34 @@ int enum_devices()
 		// Enumerate the monikers.
 		IMoniker *pMoniker = NULL;
 		ULONG cFetched;
+
 		while (pEnumCat->Next(1, &pMoniker, &cFetched) == S_OK)
 		{
+			NumCamerasFound++; // We found a camera
 			IPropertyBag *pPropBag;
 			hr = pMoniker->BindToStorage(0, 0, IID_IPropertyBag, (void **)&pPropBag);
 			if (SUCCEEDED(hr))
 			{
-				// To retrieve the filter's friendly name, do the following:
+				// Retrieve the device's friendly name
 				VARIANT varName;
 				VariantInit(&varName);
-				hr = pPropBag->Read(L"FriendlyName", &varName, 0);
+				hr = pPropBag->Read(L"FriendlyName", &varName, 0); // Read the device's name
 				if (SUCCEEDED(hr))
 				{
-					// Display the name in your UI somehow.
-					setcolor(GREEN);
-					wprintf(L"------------------> %s <------------------\n", varName.bstrVal);
+					if (NumCamerasFound < MAX_CAMERAS)
+					{
+						// Record the name, indexed by order found
+						mfg_CameraNames[NumCamerasFound - 1] = new wchar_t[MAX_LOADSTRING];
+						wcsncpy_s(mfg_CameraNames[NumCamerasFound - 1], MAX_LOADSTRING, varName.bstrVal, _TRUNCATE);
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Found Camera: %ls\n", mfg_CameraNames[NumCamerasFound - 1]) >= 1))
+							OutputDebugString(mil_DbgMesg);
+					}
 				}
 				VariantClear(&varName);
-
 				// To create an instance of the filter, do the following:
 				IBaseFilter *pFilter;
 				hr = pMoniker->BindToObject(NULL, NULL, IID_IBaseFilter, (void**)&pFilter);
-
-				process_filter(pFilter);
-
+				process_filter(pFilter, (NumCamerasFound - 1));
 				//Remember to release pFilter later.
 				pPropBag->Release();
 			}
@@ -737,6 +813,64 @@ int enum_devices()
 		pEnumCat->Release();
 	}
 	pSysDevEnum->Release();
+	OleUninitialize();
+	return NumCamerasFound;
+}
 
-	return 0;
+BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPalette)
+{
+
+	BITMAP  bm;
+
+	*phBitmap = NULL;
+	*phPalette = NULL;
+
+	// Use LoadImage() to get the image loaded into a DIBSection
+	*phBitmap = (HBITMAP)LoadImage(NULL, szFileName, IMAGE_BITMAP, 0, 0,LR_CREATEDIBSECTION | LR_DEFAULTSIZE | LR_LOADFROMFILE);
+	if (*phBitmap == NULL)
+		return FALSE;
+
+	// Get the color depth of the DIBSection
+	GetObject(*phBitmap, sizeof(BITMAP), &bm);
+	// If the DIBSection is 256 color or less, it has a color table
+	if ((bm.bmBitsPixel * bm.bmPlanes) <= 8)
+	{
+		HDC           hMemDC;
+		HBITMAP       hOldBitmap;
+		RGBQUAD       rgb[256];
+		LPLOGPALETTE  pLogPal;
+		WORD          i;
+
+		// Create a memory DC and select the DIBSection into it
+		hMemDC = CreateCompatibleDC(NULL);
+		hOldBitmap = (HBITMAP)SelectObject(hMemDC, *phBitmap);
+		// Get the DIBSection's color table
+		GetDIBColorTable(hMemDC, 0, 256, rgb);
+		// Create a palette from the color tabl
+		pLogPal = (LOGPALETTE *)malloc(sizeof(LOGPALETTE) + (256 * sizeof(PALETTEENTRY)));
+		pLogPal->palVersion = 0x300;
+		pLogPal->palNumEntries = 256;
+		for (i = 0; i<256; i++)
+		{
+			pLogPal->palPalEntry[i].peRed = rgb[i].rgbRed;
+			pLogPal->palPalEntry[i].peGreen = rgb[i].rgbGreen;
+			pLogPal->palPalEntry[i].peBlue = rgb[i].rgbBlue;
+			pLogPal->palPalEntry[i].peFlags = 0;
+		}
+		*phPalette = CreatePalette(pLogPal);
+		// Clean up
+		free(pLogPal);
+		SelectObject(hMemDC, hOldBitmap);
+		DeleteDC(hMemDC);
+	}
+	else   // It has no color table, so use a halftone palette
+	{
+		HDC    hRefDC;
+
+		hRefDC = GetDC(NULL);
+		*phPalette = CreateHalftonePalette(hRefDC);
+		ReleaseDC(NULL, hRefDC);
+	}
+	return TRUE;
+
 }
