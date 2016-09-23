@@ -12,7 +12,7 @@
 
 #include "stdafx.h"
 
-#define POINT_GREY_CAMERA 1
+// #define POINT_GREY_CAMERA 1
 
 #ifdef POINT_GREY_CAMERA
 #define CANERA_WIDTH 1288 
@@ -69,20 +69,21 @@ void cleanUpImage(HDC *imageDC, HBITMAP *imageBmp);
 BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPalette);
 
 HWND mli_CameraHwnd;
+int mil_CameraCount;
 int mli_WindowX_Dim;
 int mli_WindowY_Dim;
+int mli_CamWindowX_Dim;
+int mli_CamWindowY_Dim;
 bool mil_bCameraConnected = false;
 wchar_t* mfg_CameraNames[MAX_CAMERAS];
 bool mil_bDrawImage = false;
 wchar_t mil_DbgMesg[MAX_PATH];
-// HDC hdc;
-HDC hdcMem;
-HGDIOBJ mil_hgdiOld;
-PAINTSTRUCT ps;
-HBITMAP hbm;
-RECT rc;
+HWND hUserMsg;
+HDC mil_hdcMem;
+
+RECT mil_ClientRect;
 HDC         WorkimageDC;        // the DC to hold our image
-HBITMAP     image0Bmp;       // the actual bitmap which contains the image (will be used as display and to draw on)
+HBITMAP     hbmp_image0Bmp;       // the actual bitmap which contains the image (will be used as display and to draw on)
 HBITMAP     image1Bmp;       // the actual bitmap which contains the image (will be what we restore the display with to erase anything or everything)
 HPALETTE      hPalette;
 HBITMAP     imageBmpOld;    // the DC's old bitmap (for cleanup)
@@ -108,7 +109,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
 	// int result;
 	// Get_DeviceInfo();
-	int result = enum_devices();
+	mil_CameraCount = enum_devices();
+
+	if(mil_CameraCount == 0)
+		return FALSE;
 
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
@@ -179,14 +183,15 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    hInst = hInstance; // Store instance handle in our global variable
 
    // Get the desktop dims and take a little off all four sides
-   mli_WindowX_Dim = (GetSystemMetrics(SM_CXSCREEN)); // -(GetSystemMetrics(SM_CXSCREEN) >> 5));
-   mli_WindowY_Dim = (GetSystemMetrics(SM_CYSCREEN)); // -(GetSystemMetrics(SM_CYSCREEN) >> 5));
+   mli_WindowX_Dim = GetSystemMetrics(SM_CXSCREEN); // -(GetSystemMetrics(SM_CXSCREEN) >> 4));
+   mli_WindowY_Dim = GetSystemMetrics(SM_CYSCREEN); // -(GetSystemMetrics(SM_CYSCREEN) >> 4));
 
-   if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating MainWindow: %04d x %04d\n", mli_WindowX_Dim, mli_WindowY_Dim) > 0))
+   DWORD dwStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
+   if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating MainWindow: %04d x %04d Style: 0x%08X\n", mli_WindowX_Dim, mli_WindowY_Dim, dwStyle) > 0))
 	   OutputDebugString(mil_DbgMesg);
 
-   // hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, 1280, 720, nullptr, nullptr, hInstance, nullptr);
-   hWindow = CreateWindowW(szWindowClass, szTitle, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
+   hWindow = CreateWindowW(szWindowClass, szTitle, dwStyle, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
 
    if (!hWindow)
    {
@@ -209,181 +214,224 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_DESTROY  - post a quit message and return
 //
 //
-LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lParam)
 {
-	HINSTANCE hInstance = GetModuleHandle(NULL);
-	//some buttons
-	HWND hButtStartCam;
-	HWND hButtStopCam;
-	HWND hButtGrabFrame;
 
-    switch (message)
-    {
+	HWND hButtonChangeCam;
+	HWND hButtonRefImage;
+	HINSTANCE hInstance = GetModuleHandle(NULL);
+
+
+	switch (WndMessage)
+	{
 	case WM_CTLCOLORSTATIC:
-		SetBkMode(hdcMem, TRANSPARENT);
+		SetBkMode(mil_hdcMem, TRANSPARENT);
 		return (LRESULT)CreateSolidBrush(0xFFFFFF);
 
 	case WM_CREATE:
 	{
-		hButtStartCam = CreateWindowEx(0, L"BUTTON", L"Start Camera", WS_CHILD | WS_VISIBLE, 0, 0, 300, 60, hWnd, (HMENU)1, hInstance, 0);
-		hButtStopCam = CreateWindowEx(0, L"BUTTON", L"Stop Camera", WS_CHILD | WS_VISIBLE, 0, 75, 300, 60, hWnd, (HMENU)2, hInstance, 0);
-		hButtGrabFrame = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 150, 300, 60, hWnd, (HMENU)3, hInstance, 0);
 
-		DWORD dwStyle = WS_CHILD;
+		// If we have more than one camera
+		// add a change camera button
+		if (mil_CameraCount > 1)
+		{
+			hButtonChangeCam = CreateWindowEx(0, L"BUTTON", L"Change Camera", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_CHANGECAM, hInstance, 0);
+			hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 75, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_REF_IMAGE, hInstance, 0);
+			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
 
-		if((mli_WindowX_Dim - 300) < CANERA_WIDTH )
-			dwStyle |= WS_HSCROLL;
+		}
+		else {
+			hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Grab Frame", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU)MENU_BUTTON_REF_IMAGE, hInstance, 0);
+			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
+		}
 
-		if ( mli_WindowY_Dim  < CANERA_HEIGHT )
-			dwStyle |= WS_VSCROLL;
 
-		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, CANERA_WIDTH, CANERA_HEIGHT, hWnd, 0);
+		HGDIOBJ hfDefault = GetStockObject(DEFAULT_GUI_FONT);
+		SendMessage(hUserMsg, WM_SETFONT, (WPARAM)hfDefault, MAKELPARAM(FALSE, 0));
+		SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Status Messages:");
 
-		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating Camera Window: %04d x %04d\n", CANERA_WIDTH, CANERA_HEIGHT) > 0))
+		DWORD dwStyle = WS_CHILD | WS_VISIBLE | WS_BORDER; // | WS_HSCROLL | WS_VSCROLL;
+
+		// Calc how much we need to shrink the width to fit the screen
+		float XDim_Multiplier = 1.0;
+		if ( (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE) < CANERA_WIDTH )
+		{
+			float FullWidth = (float) CANERA_WIDTH;
+			float MaxWidth = (float) (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE);
+			XDim_Multiplier = (MaxWidth / FullWidth);
+		}
+
+		// Calc how much we need to shrink the height to fit the screen
+		float YDim_Multiplier = 1.0;
+		if ( (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE) < CANERA_HEIGHT )
+		{
+			float FullHeight = (float) CANERA_HEIGHT;
+			float MaxHeight = (float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE);
+			YDim_Multiplier = (MaxHeight / FullHeight);
+		}
+
+		// Choose the smallest of the two multipliers and use it on 
+		// both dimensions so that we maintain a correct aspect ratio
+		float Dim_Multiplier = min(XDim_Multiplier, YDim_Multiplier);
+		mli_CamWindowX_Dim = (int) (((float) (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE)) * Dim_Multiplier);
+		mli_CamWindowY_Dim = (int) (((float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE)) * Dim_Multiplier);
+
+		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, hWindow, 0);
+		// mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, (CANERA_WIDTH >> 1), (CANERA_HEIGHT >> 1), hWindow, 0);
+
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating Camera Window: %04d x %04d\n", mli_CamWindowX_Dim, mli_CamWindowY_Dim) > 0))
 			OutputDebugString(mil_DbgMesg);
 
 		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+
+		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+		SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+		SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+		SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+		ShowWindow(hWindow, SW_SHOW);
+		break;
+	} // End case WM_CREATE:
+
+	case WM_COMMAND:
+	{
+		int wmId = LOWORD(wParam);
+		// Parse the menu selections:
+		switch (wmId)
+		{
+
+		case IDM_ABOUT:
+			DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWindow, About);
+			break;
+
+		case IDM_EXIT:
+			DestroyWindow(hWindow);
+			break;
+
+		case MENU_BUTTON_CHANGECAM:
+		{
+			SendMessage(mli_CameraHwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+			ShowWindow(mli_CameraHwnd, SW_SHOW);
+			break;
+		}
+
+		case MENU_BUTTON_REF_IMAGE:
+		{
+			PAINTSTRUCT ps;
+			//Grab a Frame
+			SendMessage(mli_CameraHwnd, WM_CAP_GRAB_FRAME, 0, 0);
+			//Copy the frame we have just grabbed to the clipboard
+			SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
+			//Copy the clipboard image data to a HBITMAP object called hbm
+			HDC hdc = BeginPaint(mli_CameraHwnd, &ps);
+			mil_hdcMem = CreateCompatibleDC(hdc);
+
+			if (mil_hdcMem != NULL)
+			{
+#ifdef POINT_GREY_CAMERA
+				if (OpenClipboard(mli_CameraHwnd))
+				{
+					hbmp_image0Bmp = (HBITMAP)GetClipboardData(CF_BITMAP);
+					SelectObject(mil_hdcMem, hbmp_image0Bmp);
+					GetClientRect(mli_CameraHwnd, &mil_ClientRect);
+					CloseClipboard();
+				}else{
+					hbmp_image0Bmp = NULL;
+				}
+#else
+				if (LoadBitmapFromBMPFile(L"Sample1.bmp", &hbmp_image0Bmp, &hPalette))
+				{
+					SelectObject(mil_hdcMem, hbmp_image0Bmp);
+					GetClientRect(mli_CameraHwnd, &mil_ClientRect);
+				}else{
+					hbmp_image0Bmp = NULL;
+				}
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from LoadBitmapFromBMPFile: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				
+#endif
+
+
+				//Save hbm to a .bmp file with date/time based name
+				PBITMAPINFO pbi = CreateBitmapInfoStruct(mli_CameraHwnd, hbmp_image0Bmp);
+
+				__time64_t long_time;
+				struct tm newtime;
+				wchar_t buffer[80];
+
+				_time64(&long_time);
+				_localtime64_s(&newtime, &long_time); // Convert to local time.
+				int len = swprintf_s(buffer, 80, L"LI_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: LI_%04d-%02d-%02d_%02d%02d.bmp\n", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				// if(CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem))
+				CreateBMPFile(mli_CameraHwnd, buffer, pbi, hbmp_image0Bmp, mil_hdcMem);
+				// loadImage("Sample1.bmp", &WorkimageDC, &image1Bmp);
+				// loadImage("Sample1.bmp", &hdc, &image0Bmp);
+
+				// UpdateWindow(mli_CameraHwnd);
+				// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+				// SendMessage(mli_CameraHwnd, WM_PAINT, 0, 0);
+				// ProcessImage(buffer);
+				// drawImage(hdc, &WorkimageDC);
+				/*
+				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0); */
+				SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click and drag to define rectangle around the refistration mark.");
+				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
+				SendMessage(hWindow, WM_PAINT, 0, 0);
+
+			}else{  // Else (mil_hdcMem == NULL)
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"CreateCompatibleDC() Failed!\n") > 0))
+					OutputDebugString(mil_DbgMesg);
+			}
+			break;
+		} // End case 3:
+		} // End switch (wmId)
+		break;
+	} // End case WM_COMMAND:
+	break;
+
+	case WM_PAINT:
+	{
+		PRECT prect;
+		HDC hdc;
+		HDC hdc_cam;
+		PAINTSTRUCT ps;
+		PAINTSTRUCT ps2;
+		hdc = BeginPaint(hWindow, &ps);
+		if (hbmp_image0Bmp != NULL)
+		{
+			hdc_cam = BeginPaint(mli_CameraHwnd, &ps2);
+
+			BITMAP bm;
+			GetObject(hbmp_image0Bmp, sizeof(BITMAP), &bm);
+			//Set stretch mode as COLORONCOLOR and then copy from the 
+			//source rectangle into the smaller rectangle
+			SetStretchBltMode(hdc_cam, COLORONCOLOR);
+			StretchBlt(hdc_cam, 0, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, mil_hdcMem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+			EndPaint(mli_CameraHwnd, &ps2);
+		}
+
+		EndPaint(hWindow, &ps);
+
 		break;
 	}
 
-
-    case WM_COMMAND:
-        {
-            int wmId = LOWORD(wParam);
-            // Parse the menu selections:
-            switch (wmId)
-            {
-				case IDM_ABOUT:
-					DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
-					break;
-				case IDM_EXIT:
-					DestroyWindow(hWnd);
-					break;
-
-				// *******************************************************
-				case 1:
-				{
-					// SendMessage(camhwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-					// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-					// SendMessage(mfg_CameraHwnd, WM_CAP_DRIVER_CONNECT, mfg_CurrentCamera, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
-					ShowWindow(mli_CameraHwnd, SW_SHOW);
-					break;
-				}
-
-				case 2:
-				{
-					ShowWindow(mli_CameraHwnd, SW_HIDE);
-					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-					mil_bCameraConnected = false;
-					break;
-				}
-
-				case 3:
-				{
-					//Grab a Frame
-					SendMessage(mli_CameraHwnd, WM_CAP_GRAB_FRAME, 0, 0);
-					//Copy the frame we have just grabbed to the clipboard
-					SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
-					//Copy the clipboard image data to a HBITMAP object called hbm
-					HDC hdc = BeginPaint(mli_CameraHwnd, &ps);
-					hdcMem = CreateCompatibleDC(hdc);
-
-					if (hdcMem != NULL)
-					{
-						if (OpenClipboard(mli_CameraHwnd))
-						{
-							hbm = (HBITMAP)GetClipboardData(CF_BITMAP);
-							SelectObject(hdcMem, hbm);
-							GetClientRect(mli_CameraHwnd, &rc);
-							CloseClipboard();
-						}
-					}
-
-					//Save hbm to a .bmp file with date/time based name
-					PBITMAPINFO pbi = CreateBitmapInfoStruct(hWnd, hbm);
-
-					__time64_t long_time;
-					struct tm newtime;
-					wchar_t buffer[80];
-
-					_time64(&long_time);
-					_localtime64_s(&newtime, &long_time); // Convert to local time.
-					int len = swprintf_s(buffer, 80, L"LI_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
-
-					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: LI_%04d-%02d-%02d_%02d%02d.bmp\n", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min) > 0))
-						OutputDebugString(mil_DbgMesg);
-
-					// if(CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem))
-					CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem);
-					// loadImage("Sample1.bmp", &WorkimageDC, &image1Bmp);
-					// loadImage("Sample1.bmp", &hdc, &image0Bmp);
-					mil_bDrawImage = LoadBitmapFromBMPFile(L"Sample1.bmp", &image0Bmp, &hPalette);
-
-					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from LoadBitmapFromBMPFile: %s\n", (mil_bDrawImage ? L"Success":L"Failure")) > 0))
-						OutputDebugString(mil_DbgMesg);
-
-					RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE);
-
-					// UpdateWindow(mli_CameraHwnd);
-					// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-					// SendMessage(mli_CameraHwnd, WM_PAINT, 0, 0);
-					// ProcessImage(buffer);
-					// drawImage(hdc, &WorkimageDC);
-					/*
-					SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-					SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0); */
-					break;
-				} // End case 3:
-			} // End switch (wmId)
-		} // End case WM_COMMAND:
-        break;
-    case WM_PAINT:
-        {
-			BITMAP bm;
-            PAINTSTRUCT ps;
-
-			HBITMAP       hOldBitmap;
-			HPALETTE      hOldPalette;
-
-            HDC hdc = BeginPaint(hWnd, &ps);
-			HDC hdcMem = CreateCompatibleDC(hdc);
-            // TODO: Add any drawing code that uses hdc here...
-			if (mil_bDrawImage)
-			{
-				HDC hdcCam = BeginPaint(mli_CameraHwnd, &ps);
-				HDC hdcMemCam = CreateCompatibleDC(hdcCam);
-
-				GetObject(image0Bmp, sizeof(BITMAP), &bm);
-				hOldBitmap = (HBITMAP)SelectObject(hdcMemCam, image0Bmp);
-				hOldPalette = SelectPalette(hdcCam, hPalette, FALSE);
-				RealizePalette(hdcCam);
-
-				BitBlt(hdcCam, 0, 0, bm.bmWidth, bm.bmHeight, hdcMemCam, 0, 0, SRCCOPY);
-				SelectObject(hdcMemCam, hOldBitmap);
-				// DeleteObject(hBitmap);
-				SelectPalette(hdcCam, hOldPalette, FALSE);
-				// DeleteObject(hPalette);
-				DeleteDC(hdcMemCam);
-				EndPaint(mli_CameraHwnd, &ps);
-			}
-			// drawImage(hdc, &WorkimageDC);                  // draw our image to our screen DC
-			DeleteDC(hdcMem);
-            EndPaint(hWnd, &ps);
-        }
-        break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        break;
-    default:
-        return DefWindowProc(hWnd, message, wParam, lParam);
-    }
-    return 0;
+	case WM_DESTROY:
+		PostQuitMessage(0);
+		return 0;
+	}
+	return DefWindowProc(hWindow, WndMessage, wParam, lParam);
 }
 
 // Message handler for about box.
@@ -754,7 +802,6 @@ int enum_devices()
 {
 	HRESULT hr;
 	int NumCamerasFound = 0;
-	
 
 	OutputDebugString(L"Enumeraring videoinput devices ...\n");
 
