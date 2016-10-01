@@ -10,6 +10,15 @@
 #define WIDTH_CAMERA_EXCLUDE 300
 #define HEIGHT_CAMERA_EXCLUDE 22
 
+#define MAX_LOADSTRING 100
+#define MAX_CAMERAS 4
+#define MAX_RECTANGLES 5
+#define REF_RECTANGLE 0
+#define ZONE_RECTANGLE 1
+
+
+#define SETUPTHREAD_STACK_SIZE 0x8000
+
 static bool AcquisitionInProgress = false;
 static bool downPointSet = false;
 

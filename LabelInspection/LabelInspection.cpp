@@ -30,44 +30,31 @@ namespace std {
 #include <cstdlib> 
 };
 
-#define BLUE    0x0001
-#define GREEN   0x0002
-#define RED     0x0004
-#define GRAY    0x0007	
-
-//Remember to Link to vfw32 Library, gdi32 Library  
-
-#define BLUE    0x0001
-#define GREEN   0x0002
-#define RED     0x0004
-#define GRAY    0x0007	
-
-#define MAX_LOADSTRING 100
-#define MAX_CAMERAS 4
-
 
 // Contributing Source Used: http://www.dreamincode.net/forums/topic/193519-win32-webcam-program/
 
-HWND hWindow;
+HWND mil_hWindow;
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
 bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
 LPCTSTR szAppName = L"FrameGrab";
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
-// void drawImage(HDC screen);
 void drawImage(HDC screen, HDC *imageDC);
 void Get_DeviceInfo();
 int enum_devices();
-// void process_filter(IBaseFilter *pBaseFilter);
 void process_filter(IBaseFilter *pBaseFilter, int iIndex);
 HRESULT CamCaps(IBaseFilter *pBaseFilter, int iIndex);
-// HRESULT CamCaps(IBaseFilter *pBaseFilter);
 void _FreeMediaType(AM_MEDIA_TYPE& mt);
 static void setcolor(unsigned int color);
-// void loadImage(const char* pathname);
 void loadImage(const char* pathname, HDC *imageDC, HBITMAP *imageBmp);
 void cleanUpImage(HDC *imageDC, HBITMAP *imageBmp);
 BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPalette);
+DWORD WINAPI SetupThreadProc(_In_ LPVOID lpParameter);
+BOOL bPointIsInRect(POINT Candidate, RECT Area);
+BOOL GetClientScreenCoordinates(HWND hWindow, RECT *pRect);
+void Screen2Client(POINT *MousePosition);
 
+HWND mil_hButtonChangeCam;
+HWND mil_hButtonRefImage;
 HWND mli_CameraHwnd;
 int mil_CameraCount;
 int mli_WindowX_Dim;
@@ -75,16 +62,28 @@ int mli_WindowY_Dim;
 int mli_CamWindowX_Dim;
 int mli_CamWindowY_Dim;
 bool mil_bCameraConnected = false;
-wchar_t* mfg_CameraNames[MAX_CAMERAS];
-bool mil_bDrawImage = false;
+HANDLE mil_hSetupThread;
+DWORD  mil_lpThreadId;
+wchar_t* mil_CameraNames[MAX_CAMERAS];
+RECT mil_RectsDefined[MAX_RECTANGLES];
+// The Inspection area is defined as the opposite 
+// corner from the down point that defined the Rectangle
+// of the RefMark.
+UINT mil_RectsToDraw = 0;
+bool bBeginDefiningRefMark = false;
+bool bDefiningRefMark = false;
+bool mil_bDefiningInspectionZone = false;
+bool bDefiningInspectionZone = false;
+POINT mil_DownPointRefMark;
+POINT mil_UpPointRefMark;
+POINT mil_InspectionArea;
 wchar_t mil_DbgMesg[MAX_PATH];
 HWND hUserMsg;
 HDC mil_hdcMem;
-
-RECT mil_ClientRect;
+RECT mil_MainClientRect;
+RECT mil_CamClientRect;
 HDC         WorkimageDC;        // the DC to hold our image
-HBITMAP     hbmp_image0Bmp;       // the actual bitmap which contains the image (will be used as display and to draw on)
-HBITMAP     image1Bmp;       // the actual bitmap which contains the image (will be what we restore the display with to erase anything or everything)
+HBITMAP     hbmp_image0Bmp;       // the bitmap which contains the image we are working on
 HPALETTE      hPalette;
 HBITMAP     imageBmpOld;    // the DC's old bitmap (for cleanup)
 HBITMAP     OriginalimageBmp;
@@ -127,13 +126,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 
     HACCEL hAccelTable = LoadAccelerators(hInstance, MAKEINTRESOURCE(IDC_LABELINSPECTION));
 
-
     MSG msg;
 
     // Main message loop:
 	while (GetMessage(&msg, 0, 0, 0))
 	{
-		if (!IsDialogMessage(hWindow, &msg))
+		if (!IsDialogMessage(mil_hWindow, &msg))
 		{
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
@@ -159,7 +157,7 @@ ATOM li_RegisterClass(HINSTANCE hInstance)
     wcex.cbWndExtra     = 0;
     wcex.hInstance      = hInstance;
     wcex.hIcon          = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_LABELINSPECTION));
-    wcex.hCursor        = LoadCursor(nullptr, IDC_ARROW);
+	wcex.hCursor		= NULL; // LoadCursor(nullptr, IDC_ARROW);
     wcex.hbrBackground  = (HBRUSH)(COLOR_WINDOW+1);
     wcex.lpszMenuName   = MAKEINTRESOURCEW(IDC_LABELINSPECTION);
     wcex.lpszClassName  = szWindowClass;
@@ -191,20 +189,19 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
    if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating MainWindow: %04d x %04d Style: 0x%08X\n", mli_WindowX_Dim, mli_WindowY_Dim, dwStyle) > 0))
 	   OutputDebugString(mil_DbgMesg);
 
-   hWindow = CreateWindowW(szWindowClass, szTitle, dwStyle, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
+   mil_hWindow = CreateWindowW(szWindowClass, szTitle, dwStyle, CW_USEDEFAULT, CW_USEDEFAULT, mli_WindowX_Dim, mli_WindowY_Dim, nullptr, nullptr, hInstance, nullptr);
 
-   if (!hWindow)
+   if (!mil_hWindow)
    {
       return FALSE;
    }
 
-   ShowWindow(hWindow, nCmdShow);
-   UpdateWindow(hWindow);
+   ShowWindow(mil_hWindow, nCmdShow);
+   UpdateWindow(mil_hWindow);
 
    return TRUE;
 }
 
-//
 //  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
 //
 //  PURPOSE:  Processes messages for the main window.
@@ -212,15 +209,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 //  WM_COMMAND  - process the application menu
 //  WM_PAINT    - Paint the main window
 //  WM_DESTROY  - post a quit message and return
-//
-//
 LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lParam)
 {
 
-	HWND hButtonChangeCam;
-	HWND hButtonRefImage;
 	HINSTANCE hInstance = GetModuleHandle(NULL);
-
 
 	switch (WndMessage)
 	{
@@ -235,13 +227,11 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		// add a change camera button
 		if (mil_CameraCount > 1)
 		{
-			hButtonChangeCam = CreateWindowEx(0, L"BUTTON", L"Change Camera", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_CHANGECAM, hInstance, 0);
-			hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 75, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_REF_IMAGE, hInstance, 0);
+			mil_hButtonChangeCam = CreateWindowEx(0, L"BUTTON", L"Change Camera", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_CHANGECAM, hInstance, 0);
+			mil_hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 75, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_REF_IMAGE, hInstance, 0);
 			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
-
-		}
-		else {
-			hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Grab Frame", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU)MENU_BUTTON_REF_IMAGE, hInstance, 0);
+		}else{
+			mil_hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Grab Frame", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU)MENU_BUTTON_REF_IMAGE, hInstance, 0);
 			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
 		}
 
@@ -277,7 +267,6 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		mli_CamWindowY_Dim = (int) (((float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE)) * Dim_Multiplier);
 
 		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, hWindow, 0);
-		// mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, (CANERA_WIDTH >> 1), (CANERA_HEIGHT >> 1), hWindow, 0);
 
 		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating Camera Window: %04d x %04d\n", mli_CamWindowX_Dim, mli_CamWindowY_Dim) > 0))
 			OutputDebugString(mil_DbgMesg);
@@ -292,6 +281,165 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		break;
 	} // End case WM_CREATE:
 
+	case WM_LBUTTONDOWN:
+	{
+		POINT MousePosition;
+		MousePosition.x = GET_X_LPARAM(lParam);
+		MousePosition.y = GET_Y_LPARAM(lParam);
+
+		if (bPointIsInRect(MousePosition, mil_CamClientRect))
+		{
+
+			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Before Left Button Down Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+				OutputDebugString(mil_DbgMesg);
+
+			// ScreenToClient(mli_CameraHwnd, &MousePosition);
+			Screen2Client(&MousePosition);
+
+			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"After Left Button Down Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+				OutputDebugString(mil_DbgMesg);
+
+			if (mil_bDefiningInspectionZone)
+			{
+				mil_bDefiningInspectionZone = false;
+				bBeginDefiningRefMark = false;
+				bDefiningRefMark = true;
+				// mil_UpPointRefMark = MousePosition;
+				mil_InspectionArea = MousePosition;
+				SetRect(&mil_RectsDefined[ZONE_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_InspectionArea.x, mil_InspectionArea.y);
+				ReleaseCapture();
+				mil_RectsToDraw = 2;
+				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
+			}
+
+			if (bBeginDefiningRefMark)  
+			{
+				bBeginDefiningRefMark = false;
+				bDefiningRefMark = true;
+				mil_DownPointRefMark = MousePosition;
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Left Button Down Position - X: %04d Y: %04d\n", mil_DownPointRefMark.x, mil_DownPointRefMark.y) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				HCURSOR hCursor = LoadCursor(NULL, IDC_CROSS);
+				SetCursor(hCursor);
+			} // End if (bBeginDefiningRefMark)
+
+		}else{ // Button down outside camera window cancel any definitions in progress
+
+			if (bBeginDefiningRefMark || bDefiningRefMark || mil_bDefiningInspectionZone)
+			{
+				bDefiningRefMark = FALSE;
+				Button_Enable(mil_hButtonRefImage, TRUE);
+				ReleaseCapture();
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Left Button Down Outside Camera Window - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+					OutputDebugString(mil_DbgMesg);
+				if (mil_hdcMem != NULL)
+					DeleteDC(mil_hdcMem);
+				if (hbmp_image0Bmp != NULL)
+					DeleteObject(hbmp_image0Bmp);
+				mil_hdcMem = NULL;
+				hbmp_image0Bmp = NULL;
+				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+			}
+		}
+		break;
+	}
+
+	case WM_SIZE:
+	{
+		return 0;
+	}
+	
+
+
+	case WM_MOUSEMOVE:
+	{
+		POINT MousePosition;
+		MousePosition.x = GET_X_LPARAM(lParam);
+		MousePosition.y = GET_Y_LPARAM(lParam);
+
+		if (bPointIsInRect(MousePosition, mil_CamClientRect))
+		{
+			// ScreenToClient(mli_CameraHwnd, &MousePosition);
+			Screen2Client(&MousePosition);
+			if (bDefiningRefMark)
+			{
+				mil_UpPointRefMark = MousePosition;
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Ref Mark Mouse Move Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+					OutputDebugString(mil_DbgMesg);
+				SetRect(&mil_RectsDefined[REF_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_UpPointRefMark.x, mil_UpPointRefMark.y);
+				mil_RectsToDraw = 1;
+				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
+			}
+
+			if (mil_bDefiningInspectionZone)
+			{
+				mil_InspectionArea = MousePosition;
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspection Area - Mouse Move Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+					OutputDebugString(mil_DbgMesg);
+				SetRect(&mil_RectsDefined[ZONE_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_InspectionArea.x, mil_InspectionArea.y);
+				mil_RectsToDraw = 2;
+				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
+			}
+
+		}
+
+		break;
+	}
+
+	case WM_LBUTTONUP:
+	{
+		POINT MousePosition;
+		MousePosition.x = GET_X_LPARAM(lParam);
+		MousePosition.y = GET_Y_LPARAM(lParam);
+
+			
+		if (bPointIsInRect(MousePosition, mil_CamClientRect))
+		{
+			// ScreenToClient(mli_CameraHwnd, &MousePosition); 
+			Screen2Client( &MousePosition);
+			if (bDefiningRefMark)
+			{
+				bDefiningRefMark = FALSE;
+				mil_bDefiningInspectionZone = true;
+				mil_UpPointRefMark = MousePosition;
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Ref Mark - Left Button Up Position - X: %04d Y: %04d\n", mil_UpPointRefMark.x, mil_UpPointRefMark.y) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				HCURSOR hCursor = LoadCursor(NULL, IDC_CROSS);
+				SetCursor(hCursor);
+				SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click on opposite corner from RefMark to define the Inspection Area.");
+				
+				SetRect(&mil_RectsDefined[REF_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_UpPointRefMark.x, mil_UpPointRefMark.y);
+			} // End if (bDefiningRefMark)
+
+		}else{ // Button up outside camera window cancel DefiningRefMark
+			Button_Enable(mil_hButtonRefImage, TRUE);
+			ReleaseCapture();
+			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Ref Mark - Left Button Up Outside Camera Window - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+				OutputDebugString(mil_DbgMesg);
+			if (mil_hdcMem != NULL)
+				DeleteDC(mil_hdcMem);
+			if (hbmp_image0Bmp != NULL)
+				DeleteObject(hbmp_image0Bmp);
+			mil_hdcMem = NULL;
+			hbmp_image0Bmp = NULL;
+			HCURSOR hCursor = LoadCursor(NULL, IDC_ARROW);
+			SetCursor(hCursor);
+			SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
+			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+		}
+		break;
+	}  // End case WM_LBUTTONUP:
+
 	case WM_COMMAND:
 	{
 		int wmId = LOWORD(wParam);
@@ -299,103 +447,87 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		switch (wmId)
 		{
 
-		case IDM_ABOUT:
-			DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWindow, About);
-			break;
+			case IDM_ABOUT:
+				DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWindow, About);
+				break;
 
-		case IDM_EXIT:
-			DestroyWindow(hWindow);
-			break;
+			case IDM_EXIT:
+				DestroyWindow(hWindow);
+				break;
 
-		case MENU_BUTTON_CHANGECAM:
-		{
-			SendMessage(mli_CameraHwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
-			SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
-			SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
-			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
-			ShowWindow(mli_CameraHwnd, SW_SHOW);
-			break;
-		}
-
-		case MENU_BUTTON_REF_IMAGE:
-		{
-			PAINTSTRUCT ps;
-			//Grab a Frame
-			SendMessage(mli_CameraHwnd, WM_CAP_GRAB_FRAME, 0, 0);
-			//Copy the frame we have just grabbed to the clipboard
-			SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
-			//Copy the clipboard image data to a HBITMAP object called hbm
-			HDC hdc = BeginPaint(mli_CameraHwnd, &ps);
-			mil_hdcMem = CreateCompatibleDC(hdc);
-
-			if (mil_hdcMem != NULL)
+			case MENU_BUTTON_CHANGECAM:
 			{
-#ifdef POINT_GREY_CAMERA
-				if (OpenClipboard(mli_CameraHwnd))
-				{
-					hbmp_image0Bmp = (HBITMAP)GetClipboardData(CF_BITMAP);
-					SelectObject(mil_hdcMem, hbmp_image0Bmp);
-					GetClientRect(mli_CameraHwnd, &mil_ClientRect);
-					CloseClipboard();
-				}else{
-					hbmp_image0Bmp = NULL;
-				}
-#else
-				if (LoadBitmapFromBMPFile(L"Sample1.bmp", &hbmp_image0Bmp, &hPalette))
-				{
-					SelectObject(mil_hdcMem, hbmp_image0Bmp);
-					GetClientRect(mli_CameraHwnd, &mil_ClientRect);
-				}else{
-					hbmp_image0Bmp = NULL;
-				}
-
-				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from LoadBitmapFromBMPFile: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
-					OutputDebugString(mil_DbgMesg);
-
-				
-#endif
-
-
-				//Save hbm to a .bmp file with date/time based name
-				PBITMAPINFO pbi = CreateBitmapInfoStruct(mli_CameraHwnd, hbmp_image0Bmp);
-
-				__time64_t long_time;
-				struct tm newtime;
-				wchar_t buffer[80];
-
-				_time64(&long_time);
-				_localtime64_s(&newtime, &long_time); // Convert to local time.
-				int len = swprintf_s(buffer, 80, L"LI_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
-
-				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: LI_%04d-%02d-%02d_%02d%02d.bmp\n", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min) > 0))
-					OutputDebugString(mil_DbgMesg);
-
-				// if(CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem))
-				CreateBMPFile(mli_CameraHwnd, buffer, pbi, hbmp_image0Bmp, mil_hdcMem);
-				// loadImage("Sample1.bmp", &WorkimageDC, &image1Bmp);
-				// loadImage("Sample1.bmp", &hdc, &image0Bmp);
-
-				// UpdateWindow(mli_CameraHwnd);
-				// SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-				// SendMessage(mli_CameraHwnd, WM_PAINT, 0, 0);
-				// ProcessImage(buffer);
-				// drawImage(hdc, &WorkimageDC);
-				/*
+				SendMessage(mli_CameraHwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
-				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0); */
-				SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click and drag to define rectangle around the refistration mark.");
-				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
-				SendMessage(hWindow, WM_PAINT, 0, 0);
-
-			}else{  // Else (mil_hdcMem == NULL)
-				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"CreateCompatibleDC() Failed!\n") > 0))
-					OutputDebugString(mil_DbgMesg);
+				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEW, true, 0);
+				ShowWindow(mli_CameraHwnd, SW_SHOW);
+				break;
 			}
-			break;
-		} // End case 3:
+
+			case MENU_BUTTON_REF_IMAGE:
+			{
+				PAINTSTRUCT ps;
+				//Grab a Frame
+				SendMessage(mli_CameraHwnd, WM_CAP_GRAB_FRAME, 0, 0);
+				//Copy the frame we have just grabbed to the clipboard
+				SendMessage(mli_CameraHwnd, WM_CAP_EDIT_COPY, 0, 0);
+				//Copy the clipboard image data to a HBITMAP object called hbm
+				HDC hdc = BeginPaint(mli_CameraHwnd, &ps);
+				if (hdc != NULL)
+				{
+					mil_hdcMem = CreateCompatibleDC(hdc);
+					if (mil_hdcMem != NULL)
+					{
+	#ifdef POINT_GREY_CAMERA
+						if (OpenClipboard(mli_CameraHwnd))
+						{
+							hbmp_image0Bmp = (HBITMAP)GetClipboardData(CF_BITMAP);
+							SelectObject(mil_hdcMem, hbmp_image0Bmp);
+							CloseClipboard();
+						}else{
+							DeleteDC(mil_hdcMem);
+							mil_hdcMem = NULL;
+							hbmp_image0Bmp = NULL;
+						}
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from OpenClipboard: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
+							OutputDebugString(mil_DbgMesg);
+	#else
+						if (LoadBitmapFromBMPFile(L"Sample1.bmp", &hbmp_image0Bmp, &hPalette))
+						{
+							SelectObject(mil_hdcMem, hbmp_image0Bmp);
+						}else{
+							DeleteDC(mil_hdcMem);
+							mil_hdcMem = NULL;
+							hbmp_image0Bmp = NULL;
+						}
+
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from LoadBitmapFromBMPFile: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
+							OutputDebugString(mil_DbgMesg);
+	#endif
+						if (hbmp_image0Bmp != NULL)
+						{
+							Button_Enable(mil_hButtonRefImage, FALSE);
+							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Disabled Creat Ref Image Button\n") >= 1))
+								OutputDebugString(mil_DbgMesg);
+
+							GetClientScreenCoordinates(mil_hWindow, &mil_MainClientRect);
+							GetClientScreenCoordinates(mli_CameraHwnd, &mil_CamClientRect);
+							bBeginDefiningRefMark = TRUE;
+							SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click and drag to define rectangle around the registration mark.");
+							RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
+							SetCapture(hWindow);
+						}
+
+					}else{  // Else (mil_hdcMem == NULL)
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"CreateCompatibleDC() Failed!\n") > 0))
+							OutputDebugString(mil_DbgMesg);
+					}
+					EndPaint(mli_CameraHwnd, &ps);
+				} // End if (hdc != NULL)
+				break;
+			} // End case 3:
 		} // End switch (wmId)
 		break;
 	} // End case WM_COMMAND:
@@ -414,12 +546,37 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			hdc_cam = BeginPaint(mli_CameraHwnd, &ps2);
 
 			BITMAP bm;
+			// Find out what size the input image is
 			GetObject(hbmp_image0Bmp, sizeof(BITMAP), &bm);
-			//Set stretch mode as COLORONCOLOR and then copy from the 
-			//source rectangle into the smaller rectangle
+			// Set stretch mode as COLORONCOLOR and then 
+			// copy from the source bitmap into the display window
 			SetStretchBltMode(hdc_cam, COLORONCOLOR);
 			StretchBlt(hdc_cam, 0, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, mil_hdcMem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+			// Were're done
+			// Use mil_hdcMem as the Src to restore the current displayed image with,
+			// * Don't: DeleteDC(mil_hdcMem) and and DeleteObject(hbmp_image0Bmp);
+			// ... until later ...
+			// mil_hdcMem = NULL;
+			// hbmp_image0Bmp = NULL;
+			HBRUSH hbr = CreateSolidBrush(RGB(200, 200, 200));
+			for(int iIndex = 0; iIndex < mil_RectsToDraw; iIndex++ )
+				FrameRect(hdc_cam, &mil_RectsDefined[iIndex], hbr);
+			DeleteObject(hbr);
+
+			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"WM_PAINT %d Rects drawn\n", mil_RectsToDraw) > 0))
+				OutputDebugString(mil_DbgMesg);
+
 			EndPaint(mli_CameraHwnd, &ps2);
+			// Spin Off thread to do Setup
+			/* HANDLE WINAPI CreateThread(
+                             _In_opt_  LPSECURITY_ATTRIBUTES  lpThreadAttributes,
+                             _In_      SIZE_T                 dwStackSize,
+                             _In_      LPTHREAD_START_ROUTINE lpStartAddress,
+                             _In_opt_  LPVOID                 lpParameter,
+                             _In_      DWORD                  dwCreationFlags,
+                             _Out_opt_ LPDWORD                lpThreadId
+                             );*/
+			// mil_hSetupThread = CreateThread(NULL,(SIZE_T) SETUPTHREAD_STACK_SIZE,SetupThreadProc,(LPVOID) hbmp_image0Bmp,0, (LPDWORD) &mil_lpThreadId);
 		}
 
 		EndPaint(hWindow, &ps);
@@ -428,6 +585,11 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 	}
 
 	case WM_DESTROY:
+		if (mil_hdcMem != NULL)
+			DeleteDC(mil_hdcMem);
+		if (hbmp_image0Bmp != NULL)
+			DeleteObject(hbmp_image0Bmp);
+		ReleaseCapture();
 		PostQuitMessage(0);
 		return 0;
 	}
@@ -713,7 +875,7 @@ HRESULT CamCaps(IBaseFilter *pBaseFilter, int iIndex)
 			OutputDebugString(mil_DbgMesg);
 
 		pins[i]->EnumMediaTypes(&emt);
-		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Avialable resolutions for: %ls \n", mfg_CameraNames[iIndex]) >= 1))
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Avialable resolutions for: %ls \n", mil_CameraNames[iIndex]) >= 1))
 			OutputDebugString(mil_DbgMesg);
 
 		for (;;)
@@ -841,9 +1003,9 @@ int enum_devices()
 					if (NumCamerasFound < MAX_CAMERAS)
 					{
 						// Record the name, indexed by order found
-						mfg_CameraNames[NumCamerasFound - 1] = new wchar_t[MAX_LOADSTRING];
-						wcsncpy_s(mfg_CameraNames[NumCamerasFound - 1], MAX_LOADSTRING, varName.bstrVal, _TRUNCATE);
-						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Found Camera: %ls\n", mfg_CameraNames[NumCamerasFound - 1]) >= 1))
+						mil_CameraNames[NumCamerasFound - 1] = new wchar_t[MAX_LOADSTRING];
+						wcsncpy_s(mil_CameraNames[NumCamerasFound - 1], MAX_LOADSTRING, varName.bstrVal, _TRUNCATE);
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Found Camera: %ls\n", mil_CameraNames[NumCamerasFound - 1]) >= 1))
 							OutputDebugString(mil_DbgMesg);
 					}
 				}
@@ -919,5 +1081,86 @@ BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPal
 		ReleaseDC(NULL, hRefDC);
 	}
 	return TRUE;
+
+}
+
+// There is a new image to process, we're creating/adding to our initialization info 
+// run: 
+
+DWORD WINAPI SetupThreadProc(_In_ LPVOID lpParameter)
+{
+	DWORD dwResult = 0;
+	HBITMAP     hbmp_image = (HBITMAP)lpParameter;
+
+	if (hbmp_image == NULL)
+		return 1;
+
+	Button_Enable(mil_hButtonRefImage,FALSE);
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Disabled Creat Ref Image Button\n") >= 1))
+		OutputDebugString(mil_DbgMesg);
+
+	return dwResult;
+}
+
+BOOL bPointIsInRect(POINT Candidate, RECT Area)
+{
+
+	if ((Candidate.x < Area.left) || (Candidate.x > Area.right))
+		return false;
+	if ((Candidate.y < Area.top) || (Candidate.y > Area.bottom))
+		return false;
+	return true;
+
+
+
+}
+
+
+BOOL GetClientScreenCoordinates( HWND hWindow, RECT *pRect)
+{
+
+	POINT ptClientUL; // client area upper left corner  
+	POINT ptClientLR; // client area lower right corner  
+	RECT rcClient; // client area rectangle  
+
+	if ((hWindow == NULL) || (pRect == NULL))
+		return FALSE;
+	// Convert the client coordinates of the client area  
+	// rectangle to screen coordinates and save them in a  
+	// rectangle. The rectangle is passed to the ClipCursor  
+	// function during WM_LBUTTONDOWN processing.  
+
+	GetClientRect(hWindow, &rcClient);
+	ptClientUL.x = rcClient.left;
+	ptClientUL.y = rcClient.top;
+	ptClientLR.x = rcClient.right;
+	ptClientLR.y = rcClient.bottom;
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Client Rect - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y) > 0))
+	OutputDebugString(mil_DbgMesg);
+
+	ClientToScreen(hWindow, &ptClientUL);
+	ClientToScreen(hWindow, &ptClientLR);
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Screen Rect - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y) > 0))
+	OutputDebugString(mil_DbgMesg);
+
+	return(SetRect(pRect, ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y));
+}
+
+void Screen2Client(POINT *MousePosition)
+{
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"S2C Point IN - x: %04d y: %04d \n", MousePosition->x, MousePosition->y) > 0))
+		OutputDebugString(mil_DbgMesg);
+
+	MousePosition->x -= mil_CamClientRect.left;
+	MousePosition->x += mil_MainClientRect.left;
+	MousePosition->y -= mil_CamClientRect.top;
+	MousePosition->y += mil_MainClientRect.top;
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"S2C Point OUT - x: %04d y: %04d \n", MousePosition->x, MousePosition->y) > 0))
+		OutputDebugString(mil_DbgMesg);
 
 }
