@@ -14,13 +14,8 @@
 
 // #define POINT_GREY_CAMERA 1
 
-#ifdef POINT_GREY_CAMERA
 #define CANERA_WIDTH 1288 
 #define CANERA_HEIGHT 964 
-#else
-#define CANERA_WIDTH 1280 
-#define CANERA_HEIGHT 720 
-#endif
 
 
 using namespace cv;
@@ -37,7 +32,6 @@ HWND mil_hWindow;
 PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
 bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC);
 LPCTSTR szAppName = L"FrameGrab";
-PBITMAPINFO CreateBitmapInfoStruct(HWND hwnd, HBITMAP hBmp);
 void drawImage(HDC screen, HDC *imageDC);
 void Get_DeviceInfo();
 int enum_devices();
@@ -50,8 +44,11 @@ void cleanUpImage(HDC *imageDC, HBITMAP *imageBmp);
 BOOL LoadBitmapFromBMPFile(LPTSTR szFileName, HBITMAP *phBitmap, HPALETTE *phPalette);
 DWORD WINAPI SetupThreadProc(_In_ LPVOID lpParameter);
 BOOL bPointIsInRect(POINT Candidate, RECT Area);
-BOOL GetClientScreenCoordinates(HWND hWindow, RECT *pRect);
+BOOL GetClientScreenCoordinates(HWND hWindowParent, HWND hWindowChild, RECT *pRect);
 void Screen2Client(POINT *MousePosition);
+UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel);
+BOOL isMatchToRefColumn(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT Increment, UINT NumberOfValues, BYTE rgbTolerance);
+BOOL isMatchToRefRow(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT NumberOfValues, BYTE rgbTolerance);
 
 HWND mil_hButtonChangeCam;
 HWND mil_hButtonRefImage;
@@ -61,17 +58,24 @@ int mli_WindowX_Dim;
 int mli_WindowY_Dim;
 int mli_CamWindowX_Dim;
 int mli_CamWindowY_Dim;
+float mil_Dim_Multiplier;
+float mil_Dim_Conversion;
 bool mil_bCameraConnected = false;
-HANDLE mil_hSetupThread;
-DWORD  mil_lpThreadId;
+PBITMAPINFO mil_pImageBitMapInfo;
+LPBYTE mil_pImageBits;      
 wchar_t* mil_CameraNames[MAX_CAMERAS];
 RECT mil_RectsDefined[MAX_RECTANGLES];
+RECT *mil_RefMarkRects = NULL;
+UINT mil_ToDraw = 0;
+// ProcessImage *mil_ProcessImage;
 // The Inspection area is defined as the opposite 
 // corner from the down point that defined the Rectangle
 // of the RefMark.
 UINT mil_RectsToDraw = 0;
 bool bBeginDefiningRefMark = false;
 bool bDefiningRefMark = false;
+bool bRefMarkSearched = false;
+bool bDrawFoundRefMark = false;
 bool mil_bDefiningInspectionZone = false;
 bool bDefiningInspectionZone = false;
 POINT mil_DownPointRefMark;
@@ -231,7 +235,7 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			mil_hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 75, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU) MENU_BUTTON_REF_IMAGE, hInstance, 0);
 			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
 		}else{
-			mil_hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Grab Frame", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU)MENU_BUTTON_REF_IMAGE, hInstance, 0);
+			mil_hButtonRefImage = CreateWindowEx(0, L"BUTTON", L"Create Ref Image", WS_CHILD | WS_VISIBLE, 0, 0, WIDTH_CAMERA_EXCLUDE, 60, hWindow, (HMENU)MENU_BUTTON_REF_IMAGE, hInstance, 0);
 			hUserMsg = CreateWindowEx(WS_EX_CLIENTEDGE, L"EDIT", L"Status Messages", WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | WS_BORDER, 0, 150, WIDTH_CAMERA_EXCLUDE, 200, hWindow, (HMENU)MENU_STAT_WINDOW, hInstance, NULL);
 		}
 
@@ -262,9 +266,14 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 
 		// Choose the smallest of the two multipliers and use it on 
 		// both dimensions so that we maintain a correct aspect ratio
-		float Dim_Multiplier = min(XDim_Multiplier, YDim_Multiplier);
-		mli_CamWindowX_Dim = (int) (((float) (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE)) * Dim_Multiplier);
-		mli_CamWindowY_Dim = (int) (((float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE)) * Dim_Multiplier);
+		mil_Dim_Multiplier = min(XDim_Multiplier, YDim_Multiplier);
+		// mli_CamWindowX_Dim = (int) (((float) (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE)) * mil_Dim_Multiplier);
+		// mli_CamWindowY_Dim = (int) (((float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE)) * mil_Dim_Multiplier);
+
+		mli_CamWindowX_Dim = (int)(((float)(CANERA_WIDTH)) * mil_Dim_Multiplier);
+		mli_CamWindowY_Dim = (int)(((float)(CANERA_HEIGHT)) * mil_Dim_Multiplier);
+
+		mil_Dim_Conversion = ((float) 1.0) / mil_Dim_Multiplier;
 
 		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, hWindow, 0);
 
@@ -287,12 +296,11 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		MousePosition.x = GET_X_LPARAM(lParam);
 		MousePosition.y = GET_Y_LPARAM(lParam);
 
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Reported Mouse Button Down Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
+			OutputDebugString(mil_DbgMesg);
+
 		if (bPointIsInRect(MousePosition, mil_CamClientRect))
 		{
-
-			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Before Left Button Down Position - X: %04d Y: %04d\n", MousePosition.x, MousePosition.y) > 0))
-				OutputDebugString(mil_DbgMesg);
-
 			// ScreenToClient(mli_CameraHwnd, &MousePosition);
 			Screen2Client(&MousePosition);
 
@@ -304,11 +312,11 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 				mil_bDefiningInspectionZone = false;
 				bBeginDefiningRefMark = false;
 				bDefiningRefMark = true;
-				// mil_UpPointRefMark = MousePosition;
 				mil_InspectionArea = MousePosition;
 				SetRect(&mil_RectsDefined[ZONE_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_InspectionArea.x, mil_InspectionArea.y);
 				ReleaseCapture();
 				mil_RectsToDraw = 2;
+				bDrawFoundRefMark = true;
 				RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
 			}
 
@@ -417,6 +425,7 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 				SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click on opposite corner from RefMark to define the Inspection Area.");
 				
 				SetRect(&mil_RectsDefined[REF_RECTANGLE], mil_DownPointRefMark.x, mil_DownPointRefMark.y, mil_UpPointRefMark.x, mil_UpPointRefMark.y);
+				
 			} // End if (bDefiningRefMark)
 
 		}else{ // Button up outside camera window cancel DefiningRefMark
@@ -494,7 +503,7 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from OpenClipboard: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
 							OutputDebugString(mil_DbgMesg);
 	#else
-						if (LoadBitmapFromBMPFile(L"Sample1.bmp", &hbmp_image0Bmp, &hPalette))
+						if (LoadBitmapFromBMPFile(L"Sample2.bmp", &hbmp_image0Bmp, &hPalette))
 						{
 							SelectObject(mil_hdcMem, hbmp_image0Bmp);
 						}else{
@@ -508,12 +517,30 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 	#endif
 						if (hbmp_image0Bmp != NULL)
 						{
-							Button_Enable(mil_hButtonRefImage, FALSE);
-							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Disabled Creat Ref Image Button\n") >= 1))
+							//Save hbm to a .bmp file with date/time based name
+							mil_pImageBitMapInfo = CreateBitmapInfoStruct(mli_CameraHwnd, hbmp_image0Bmp);
+
+							__time64_t long_time;
+							struct tm newtime;
+							wchar_t buffer[80];
+
+							_time64(&long_time);
+							_localtime64_s(&newtime, &long_time); // Convert to local time.
+							// int len = swprintf_s(buffer, 80, L"LI_%04d-%02d-%02d_%02d%02d.bmp", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min);
+							int len = swprintf_s(buffer, 80, L"Image.bmp");
+
+							// if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: LI_%04d-%02d-%02d_%02d%02d.bmp\n", (newtime.tm_year + 1900), (newtime.tm_mon + 1), newtime.tm_mday, newtime.tm_hour, newtime.tm_min) > 0))
+							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating File: %s\n", buffer) > 0))
 								OutputDebugString(mil_DbgMesg);
 
-							GetClientScreenCoordinates(mil_hWindow, &mil_MainClientRect);
-							GetClientScreenCoordinates(mli_CameraHwnd, &mil_CamClientRect);
+							// if(CreateBMPFile(hWnd, buffer, pbi, hbm, hdcMem))
+							CreateBMPFile(mli_CameraHwnd, buffer, mil_pImageBitMapInfo, hbmp_image0Bmp, mil_hdcMem);
+
+							Button_Enable(mil_hButtonRefImage, FALSE);
+							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Disabled Create Ref Image Button\n") >= 1))
+								OutputDebugString(mil_DbgMesg);
+
+							GetClientScreenCoordinates(mil_hWindow, mli_CameraHwnd, &mil_CamClientRect);
 							bBeginDefiningRefMark = TRUE;
 							SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)L"Click and drag to define rectangle around the registration mark.");
 							RedrawWindow(hWindow, NULL, NULL, RDW_INVALIDATE);
@@ -558,13 +585,28 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			// ... until later ...
 			// mil_hdcMem = NULL;
 			// hbmp_image0Bmp = NULL;
-			HBRUSH hbr = CreateSolidBrush(RGB(200, 200, 200));
-			for(int iIndex = 0; iIndex < mil_RectsToDraw; iIndex++ )
-				FrameRect(hdc_cam, &mil_RectsDefined[iIndex], hbr);
-			DeleteObject(hbr);
+			HBRUSH hbr;
+			if (!bDrawFoundRefMark)
+			{
+				hbr = CreateSolidBrush(RGB(200, 200, 200));
+				for (int iIndex = 0; iIndex < mil_RectsToDraw; iIndex++)
+					FrameRect(hdc_cam, &mil_RectsDefined[iIndex], hbr);
+			}else{
+				hbr = CreateSolidBrush(RGB(200, 0, 0));
+				
+				if( (mil_RectsToDraw > 1) && (mil_ToDraw == 0 ))
+				{
+					mil_ToDraw = LocateRefMarks(&mil_RectsDefined[REF_RECTANGLE], hdc_cam );
+					bRefMarkSearched = (mil_ToDraw > 0);
+				}
 
+				for (int RectIndex = 0; RectIndex < mil_ToDraw; RectIndex++)
+					FrameRect(hdc_cam, &mil_RefMarkRects[RectIndex], hbr);
+			}
 			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"WM_PAINT %d Rects drawn\n", mil_RectsToDraw) > 0))
 				OutputDebugString(mil_DbgMesg);
+
+			DeleteObject(hbr);
 
 			EndPaint(mli_CameraHwnd, &ps2);
 			// Spin Off thread to do Setup
@@ -589,6 +631,10 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			DeleteDC(mil_hdcMem);
 		if (hbmp_image0Bmp != NULL)
 			DeleteObject(hbmp_image0Bmp);
+		if(mil_pImageBits != NULL)
+			GlobalFree((HGLOBAL)mil_pImageBits);
+		if(mil_RefMarkRects != NULL)
+			HeapFree(GetProcessHeap(), 0, mil_RefMarkRects);
 		ReleaseCapture();
 		PostQuitMessage(0);
 		return 0;
@@ -622,7 +668,7 @@ bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	HANDLE hf;                  // file handle
 	BITMAPFILEHEADER hdr;       // bitmap file-header
 	PBITMAPINFOHEADER pbih;     // bitmap info-header
-	LPBYTE lpBits;              // memory pointer
+	
 	DWORD dwTotal;              // total count of bytes
 	DWORD cb;                   // incremental count of bytes
 	BYTE *hp;                   // byte pointer
@@ -630,17 +676,17 @@ bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	bool bErrorOccured = false;
 
 	pbih = (PBITMAPINFOHEADER)pbi;
-	lpBits = (LPBYTE)GlobalAlloc(GMEM_FIXED, pbih->biSizeImage);
+	mil_pImageBits = (LPBYTE)GlobalAlloc(GMEM_FIXED, pbih->biSizeImage);
 
-	if (!lpBits)
+	if (!mil_pImageBits)
 	{
 		MessageBox(hwnd, L"GlobalAlloc", L"Error", MB_OK);
 		bErrorOccured = true;
 	}
 
-	// Retrieve the color table (RGBQUAD array) and the bits
+	// Retrieve the color table (RGBTRIPLE array) and the bits
 	// (array of palette indices) from the DIB.
-	if (!GetDIBits(hDC, hBMP, 0, (WORD)pbih->biHeight, lpBits, pbi, DIB_RGB_COLORS))
+	if (!GetDIBits(hDC, hBMP, 0, (WORD)pbih->biHeight, mil_pImageBits, pbi, DIB_RGB_COLORS))
 	{
 		MessageBox(hwnd, L"GetDIBits", L"Error", MB_OK);
 		bErrorOccured = true;
@@ -679,7 +725,7 @@ bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 
 	// Copy the array of color indices into the .BMP file.
 	dwTotal = cb = pbih->biSizeImage;
-	hp = lpBits;
+	hp = mil_pImageBits;
 
 	if (!WriteFile(hf, (LPSTR)hp, (int)cb, (LPDWORD)&dwTmp, NULL))
 	{
@@ -695,7 +741,8 @@ bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC
 	}
 
 	// Free memory.
-	GlobalFree((HGLOBAL)lpBits);
+	
+	// mil_ProcessImage = new ProcessImage(pszFile);
 	return bErrorOccured;
 }
 
@@ -1117,36 +1164,58 @@ BOOL bPointIsInRect(POINT Candidate, RECT Area)
 }
 
 
-BOOL GetClientScreenCoordinates( HWND hWindow, RECT *pRect)
+BOOL GetClientScreenCoordinates(HWND hWindowParent, HWND hWindowChild, RECT *pRect)
 {
 
-	POINT ptClientUL; // client area upper left corner  
-	POINT ptClientLR; // client area lower right corner  
-	RECT rcClient; // client area rectangle  
+	POINT ptClientChildUL; // client area upper left corner  
+	POINT ptClientChildLR; // client area lower right corner  
+	POINT ptClientParentUL; // client area upper left corner  
+	POINT ptClientParentLR; // client area lower right corner  
+	RECT rcClientParent; // client area rectangle of parent  
+	RECT rcClientChild; // client area rectangle of parent  
 
-	if ((hWindow == NULL) || (pRect == NULL))
+	if ((hWindowParent == NULL) || (hWindowChild == NULL) || (pRect == NULL))
 		return FALSE;
 	// Convert the client coordinates of the client area  
 	// rectangle to screen coordinates and save them in a  
 	// rectangle. The rectangle is passed to the ClipCursor  
 	// function during WM_LBUTTONDOWN processing.  
+	GetClientRect(hWindowParent, &rcClientParent);
+	GetClientRect(hWindowChild, &rcClientChild);
 
-	GetClientRect(hWindow, &rcClient);
-	ptClientUL.x = rcClient.left;
-	ptClientUL.y = rcClient.top;
-	ptClientLR.x = rcClient.right;
-	ptClientLR.y = rcClient.bottom;
+	ptClientParentUL.x = rcClientParent.left;
+	ptClientParentUL.y = rcClientParent.top;
+	ptClientParentLR.x = rcClientParent.right;
+	ptClientParentLR.y = rcClientParent.bottom;
 
-	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Client Rect - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y) > 0))
+	ptClientChildUL.x = rcClientChild.left;
+	ptClientChildUL.y = rcClientChild.top;
+	ptClientChildLR.x = rcClientChild.right;
+	ptClientChildLR.y = rcClientChild.bottom;
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Client Rect Parent - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientParentUL.x, ptClientParentUL.y, ptClientParentLR.x, ptClientParentLR.y) > 0))
+		OutputDebugString(mil_DbgMesg);
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Client Rect Child - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientChildUL.x, ptClientChildUL.y, ptClientChildLR.x, ptClientChildLR.y) > 0))
+		OutputDebugString(mil_DbgMesg);
+
+	ClientToScreen(hWindowParent, &ptClientParentUL);
+	ClientToScreen(hWindowParent, &ptClientParentLR);
+
+	ClientToScreen(hWindowChild, &ptClientChildUL);
+	ClientToScreen(hWindowChild, &ptClientChildLR);
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Screen Rect Parent - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientParentUL.x, ptClientParentUL.y, ptClientParentLR.x, ptClientParentLR.y) > 0))
 	OutputDebugString(mil_DbgMesg);
 
-	ClientToScreen(hWindow, &ptClientUL);
-	ClientToScreen(hWindow, &ptClientLR);
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Screen Rect Child - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientChildUL.x, ptClientChildUL.y, ptClientChildLR.x, ptClientChildLR.y) > 0))
+		OutputDebugString(mil_DbgMesg);
 
-	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Screen Rect - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y) > 0))
-	OutputDebugString(mil_DbgMesg);
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GCSC Parrent Rel Child Rect - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", (ptClientChildUL.x - ptClientParentUL.x), (ptClientChildUL.y - ptClientParentUL.y), (ptClientChildLR.x - ptClientParentUL.x), (ptClientChildLR.y - ptClientParentUL.y)) > 0))
+		OutputDebugString(mil_DbgMesg);
 
-	return(SetRect(pRect, ptClientUL.x, ptClientUL.y, ptClientLR.x, ptClientLR.y));
+	// return(SetRect(pRect, ptClientChildUL.x, ptClientChildUL.y, ptClientChildLR.x, ptClientChildLR.y));
+	return(SetRect(pRect, (ptClientChildUL.x - ptClientParentUL.x), (ptClientChildUL.y - ptClientParentUL.y), (ptClientChildLR.x - ptClientParentUL.x), (ptClientChildLR.y - ptClientParentUL.y)));
 }
 
 void Screen2Client(POINT *MousePosition)
@@ -1164,3 +1233,224 @@ void Screen2Client(POINT *MousePosition)
 		OutputDebugString(mil_DbgMesg);
 
 }
+
+UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
+{
+	UINT RefMarksFound = 0;
+	UINT ColumIndex = 0;
+	UINT RowIndex = 0;
+	RGBTRIPLE *rgbColumnValues;
+	RGBTRIPLE *rgbRowValues;
+	UINT NumberOfColumnValues;
+	UINT NumberOfRowValues;
+	RGBTRIPLE *rgbColumnStart;
+	RGBTRIPLE *rgbRowStart;
+	RGBTRIPLE *rgbCurrentColumPixel;
+	RGBTRIPLE *rgbCurrentRowPixel;
+	UINT ImageWidth;
+	UINT ImageHeight;
+	UINT RefMarkColumnCount = 0;
+	UINT RefMarkRowCount = 0;
+	UINT *BeginningEndingRows;
+	UINT *BeginningEndingColumns;
+
+	if(CaptureRect == NULL) 
+		return RefMarksFound;
+
+	// The image on screen may be smaller than the full size
+	// image map the screen cordinates to the full size dimensions
+	UINT refMarkTop = (CaptureRect->top * mil_Dim_Conversion);
+	UINT refMarkLeft = (CaptureRect->left * mil_Dim_Conversion);
+	UINT refMarkBottom = (CaptureRect->bottom * mil_Dim_Conversion);
+	UINT refMarkRight = (CaptureRect->right * mil_Dim_Conversion);
+
+
+	NumberOfColumnValues = ((refMarkBottom) - (refMarkTop));
+	NumberOfRowValues = ((refMarkRight) - (refMarkLeft));
+	ImageWidth = mil_pImageBitMapInfo->bmiHeader.biWidth;
+	ImageHeight = mil_pImageBitMapInfo->bmiHeader.biHeight;
+
+	rgbColumnValues = (RGBTRIPLE *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (sizeof(RGBTRIPLE) * NumberOfColumnValues) );
+	rgbRowValues = (RGBTRIPLE *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (sizeof(RGBTRIPLE) * NumberOfRowValues));
+
+	BeginningEndingRows = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageHeight / NumberOfColumnValues)) + 1) );
+	BeginningEndingColumns = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageWidth / NumberOfColumnValues)) + 1));
+
+	rgbColumnStart = rgbRowStart = (RGBTRIPLE *) mil_pImageBits;
+
+	if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Column - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(mil_pImageBits), (UINT) (&rgbColumnStart[(ImageWidth * ImageHeight)])) > 0))
+		OutputDebugString(mil_DbgMesg);
+
+	rgbColumnStart += ((ImageWidth) * (refMarkTop)) + (refMarkLeft) + (NumberOfRowValues >> 1);
+	rgbRowStart += (((ImageWidth) * ((refMarkTop) + (NumberOfColumnValues >> 1))) + (refMarkLeft) );
+
+	// Read the center column from the refmark rectangle
+	for (int iIndex = 0; iIndex < NumberOfColumnValues; iIndex++)
+		rgbColumnValues[iIndex] = rgbColumnStart[iIndex * ImageWidth];
+	// Read the center row from the refmark rectangle
+	for (int iIndex = 0; iIndex < NumberOfRowValues; iIndex++)
+		rgbRowValues[iIndex] = rgbRowStart[iIndex];
+
+	// Itterate over each column of pixels that could possibly contain a matching sequence to the reference pixels
+	for (int CurrentColumnIndex = NumberOfRowValues >> 1; CurrentColumnIndex < (ImageWidth - (NumberOfRowValues >> 1)); CurrentColumnIndex++)
+	{
+		// Point to the beginning pixel of the current column
+		rgbCurrentColumPixel = (RGBTRIPLE *) mil_pImageBits;
+		rgbCurrentColumPixel += CurrentColumnIndex;
+		// Beging checking each pixel in the current column
+		for (int CurrentColumnRow = 0; CurrentColumnRow < (ImageHeight - NumberOfColumnValues); CurrentColumnRow++)
+		{
+			// If the value of all the current sequence of pixels matches the refpixels within the tolerance value
+			if (isMatchToRefColumn(rgbColumnValues, rgbCurrentColumPixel, ImageWidth, NumberOfColumnValues, (BYTE) 8) )
+			{
+				RefMarkColumnCount++;
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Column Found ! - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentColumnIndex, CurrentColumnRow, rgbCurrentColumPixel) > 0))
+				 	OutputDebugString(mil_DbgMesg);
+
+				Graphics graphics(RMarkHandel);
+				Pen      pen(Color(255, 0, 0, 255));
+				graphics.DrawLine(&pen, CurrentColumnIndex, CurrentColumnRow, CurrentColumnIndex, (CurrentColumnRow + NumberOfColumnValues) );
+
+
+				// Record this as the center column of a ref mark   mil_Dim_Conversion - mil_Dim_Multiplier
+				// *BeginningEndingRows = CurrentColumnRow;
+				*BeginningEndingRows = (CurrentColumnRow * mil_Dim_Multiplier);
+				CurrentColumnRow += NumberOfColumnValues;
+				BeginningEndingRows++;
+				// *BeginningEndingRows = CurrentColumnRow;
+				*BeginningEndingRows = (CurrentColumnRow * mil_Dim_Multiplier);
+				BeginningEndingRows++;
+                // Jump forward a refmark height in pixels
+				rgbCurrentColumPixel += (ImageWidth * NumberOfColumnValues);
+				// CurrentColumnRow += NumberOfColumnValues;
+			}else{ // Else no match inc to next pixel
+				rgbCurrentColumPixel += ImageWidth;
+				/*
+					COLORREF SetPixel(
+				  _In_ HDC      hdc,
+				  _In_ int      X,
+				  _In_ int      Y,
+				  _In_ COLORREF crColor
+					);	*/
+				// SetPixel(RMarkHandel, CurrentColumnIndex, CurrentColumnRow, RGB(200, 0, 200));
+				// if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Column - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentColumnIndex, CurrentColumnRow, rgbCurrentColumPixel) > 0))
+				// 	OutputDebugString(mil_DbgMesg);
+
+			}
+		}
+	}
+
+	// Itterate over each row of pixels that may possibly contain a matching sequence to the reference pixels
+	for (int CurrentRowIndex = (NumberOfColumnValues >> 1); CurrentRowIndex < (ImageHeight - (NumberOfColumnValues >> 1)); CurrentRowIndex++)
+	{
+		// Point to the beginning pixel of the current row
+		rgbCurrentRowPixel = (RGBTRIPLE *) mil_pImageBits;
+		rgbCurrentRowPixel += (CurrentRowIndex * ImageWidth);
+		// Itterate over the columns in the current row looking for a matching sequence of pixels
+		for (int CurrentRowColumn = 0; CurrentRowColumn < (ImageWidth - NumberOfRowValues); CurrentRowColumn++)
+		{
+			// If all the pixels in rgbRowValues match the current pixels in the image
+			if (isMatchToRefRow(rgbRowValues, rgbCurrentRowPixel, NumberOfRowValues, (BYTE) 8))
+			{
+				RefMarkRowCount++;
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Row Found ! - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentRowColumn, CurrentRowIndex, rgbCurrentRowPixel) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				Graphics graphics(RMarkHandel);
+				Pen      pen(Color(255, 0, 0, 255));
+				graphics.DrawLine(&pen, CurrentRowColumn, CurrentRowIndex, (CurrentRowColumn + NumberOfRowValues), CurrentRowIndex);
+
+
+				// Record this as the left and right side of a reference rectangle  mil_Dim_Conversion - mil_Dim_Multiplier
+				// *BeginningEndingColumns = CurrentRowColumn;
+				*BeginningEndingColumns = (CurrentRowColumn * mil_Dim_Multiplier);
+				CurrentRowColumn += NumberOfRowValues;
+				BeginningEndingColumns++;
+				// *BeginningEndingColumns = CurrentRowColumn;
+				*BeginningEndingColumns = (CurrentRowColumn * mil_Dim_Multiplier);
+				BeginningEndingColumns++;
+				// Jump forward a refmark width
+				rgbCurrentRowPixel += NumberOfRowValues;
+				// CurrentRowColumn += NumberOfRowValues;
+			}else{ // Else no match inc to next pixel
+				rgbCurrentRowPixel++;
+				// SetPixel(RMarkHandel, CurrentRowColumn, CurrentRowIndex, RGB(200, 0, 200));
+				// if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Row - Row Index: %04d  Colum: %04d  Address: 0x%08X\n", CurrentRowIndex, CurrentRowColumn, rgbCurrentRowPixel) > 0))
+				//	 OutputDebugString(mil_DbgMesg);
+
+			}
+		}
+	}
+
+	// If we found at least one refmark
+	if ((RefMarkRowCount > 0) && (RefMarkColumnCount > 0))
+	{
+		// Reset the pointers to the beginning
+		BeginningEndingColumns -= (RefMarkRowCount << 1);
+		BeginningEndingRows -= (RefMarkColumnCount << 1);
+		// Allocate space to store the rects
+		mil_RefMarkRects = (RECT *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(RECT) * (RefMarkRowCount * RefMarkColumnCount))));
+		if(mil_RefMarkRects != NULL)
+		{
+			for (int iColumnIndex = 0; iColumnIndex < RefMarkColumnCount; iColumnIndex += 2)
+			{
+				for (int iRowIndex = 0; iRowIndex < RefMarkRowCount; iRowIndex += 2)
+				{
+					mil_RefMarkRects[RefMarksFound].left = BeginningEndingColumns[iColumnIndex];
+					mil_RefMarkRects[RefMarksFound].right = BeginningEndingColumns[iColumnIndex + 1];
+					mil_RefMarkRects[RefMarksFound].top = BeginningEndingRows[iRowIndex];
+					mil_RefMarkRects[RefMarksFound].bottom = BeginningEndingRows[iRowIndex + 1];
+					RefMarksFound++;
+				}
+			}
+		}
+	}
+	HeapFree(GetProcessHeap(), 0, rgbColumnValues );
+	HeapFree(GetProcessHeap(), 0, rgbRowValues);
+	HeapFree(GetProcessHeap(), 0, BeginningEndingRows);
+	HeapFree(GetProcessHeap(), 0, BeginningEndingColumns);
+
+	return RefMarksFound;
+}
+
+BOOL isMatchToRefColumn(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT Increment, UINT NumberOfValues, BYTE rgbTolerance)
+{
+	RGBTRIPLE RefPixel;
+	RGBTRIPLE ImagePixel;
+
+	for (UINT PixelIndex = 0; PixelIndex < NumberOfValues; PixelIndex++)
+	{
+		RefPixel = RefValues[PixelIndex];
+		ImagePixel = CandidatePixel[(PixelIndex * Increment)];
+		if ((abs(RefPixel.rgbtRed - ImagePixel.rgbtRed)) > rgbTolerance)
+			return false;
+		if ((abs(RefPixel.rgbtGreen - ImagePixel.rgbtGreen)) > rgbTolerance)
+			return false;
+		if ((abs(RefPixel.rgbtBlue - ImagePixel.rgbtBlue)) > rgbTolerance)
+			return false;
+	}
+	return true;
+}
+
+BOOL isMatchToRefRow(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT NumberOfValues, BYTE rgbTolerance)
+{
+	RGBTRIPLE RefPixel;
+	RGBTRIPLE ImagePixel;
+
+	for (UINT PixelIndex = 0; PixelIndex < NumberOfValues; PixelIndex++)
+	{
+		RefPixel = RefValues[PixelIndex];
+		ImagePixel = CandidatePixel[PixelIndex];
+		if ((abs(RefPixel.rgbtRed - ImagePixel.rgbtRed)) > rgbTolerance)
+			return false;
+		if ((abs(RefPixel.rgbtGreen - ImagePixel.rgbtGreen)) > rgbTolerance)
+			return false;
+		if ((abs(RefPixel.rgbtBlue - ImagePixel.rgbtBlue)) > rgbTolerance)
+			return false;
+	}
+	return true;
+}
+
+

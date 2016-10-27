@@ -26,6 +26,9 @@
 #include <cwchar>
 #include <dshow.h>
 #include <vector>
+#include <objidl.h>
+#include <gdiplus.h>
+
 
 // OpenCV
 #include "opencv2\core\core.hpp"
@@ -35,5 +38,9 @@
 #include <iostream>
 #include "ProcessImage.h"
 #include "LabelInspection.h"
+
+
+using namespace Gdiplus;
+#pragma comment (lib,"Gdiplus.lib")
 
 // TODO: reference additional headers your program requires here

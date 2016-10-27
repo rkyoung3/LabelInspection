@@ -4,10 +4,8 @@
 class ProcessImage
 {
 public:
-	ProcessImage();
 	ProcessImage(wchar_t*);
-	ProcessImage(char * );
-
+	int FindMark(wchar_t *pi_TemplateName);
 
 	~ProcessImage();
 };
