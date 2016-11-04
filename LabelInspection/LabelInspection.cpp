@@ -2,12 +2,14 @@
 * LabelInspection  - Created: 08/23/2016  3:25:59 PM
 * Creator Robert K Young - rkyoung@sonic.net
 * ChangeLog:
-* 0.0.1 - 8/23/2016 3:32:33 PM - Initial Version
-* 0.0.2 - 8/24/2016 4:22:15 PM - Added capture file name based on date/time
-* 0.1.0 - 8/15/2016 3:38:58 PM - First beta version with basic functionality
-* 0.2.0 - 8/25/2016 1:36:01 PM - Incorporated OpenCV
-* 0.3.0 - 9/01/2016 5:21:43 PM - Began implementing MediaFoundation calls to control camera.
-* 0.4.0 - 9/13/2016 9:11:15 AM - Implementation of MediaFoundation failed, moving on to processing image
+* 0.0.1 - 08/23/2016 03:32:33 PM - Initial Version
+* 0.0.2 - 08/24/2016 04:22:15 PM - Added capture file name based on date/time
+* 0.1.0 - 08/15/2016 03:38:58 PM - First beta version with basic functionality
+* 0.2.0 - 08/25/2016 01:36:01 PM - Incorporated OpenCV
+* 0.3.0 - 09/01/2016 05:21:43 PM - Began implementing MediaFoundation calls to control camera.
+* 0.4.0 - 09/13/2016 09:11:15 AM - Implementation of MediaFoundation failed, moving on to processing image
+* 0.5.0 - 10/15/2016 11:06:10 AM - Successfully locate all ref marks on simulated data
+* 0.6.0 - 11/04/2016 12:51:16 AM - Successfully create Golden Image from all ref marks found
 //**************************************************************************************************/
 
 #include "stdafx.h"
@@ -49,6 +51,7 @@ void Screen2Client(POINT *MousePosition);
 UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel);
 BOOL isMatchToRefColumn(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT Increment, UINT NumberOfValues, BYTE rgbTolerance);
 BOOL isMatchToRefRow(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT NumberOfValues, BYTE rgbTolerance);
+BOOL rectIsDuplicate(RECT *RefMarkRects, RECT Candidate, UINT MarksFound);
 
 HWND mil_hButtonChangeCam;
 HWND mil_hButtonRefImage;
@@ -62,12 +65,14 @@ float mil_Dim_Multiplier;
 float mil_Dim_Conversion;
 bool mil_bCameraConnected = false;
 PBITMAPINFO mil_pImageBitMapInfo;
-LPBYTE mil_pImageBits;      
+LPBYTE mil_pImageBits; 
+RGBTRIPLE *mil_RefImage;
 wchar_t* mil_CameraNames[MAX_CAMERAS];
 RECT mil_RectsDefined[MAX_RECTANGLES];
 RECT *mil_RefMarkRects = NULL;
+RECT *mil_ZoneRects = NULL;
 UINT mil_ToDraw = 0;
-// ProcessImage *mil_ProcessImage;
+ProcessImage *mil_ProcessImage;
 // The Inspection area is defined as the opposite 
 // corner from the down point that defined the Rectangle
 // of the RefMark.
@@ -76,6 +81,7 @@ bool bBeginDefiningRefMark = false;
 bool bDefiningRefMark = false;
 bool bRefMarkSearched = false;
 bool bDrawFoundRefMark = false;
+bool mil_bRefMarksDrawn = false;
 bool mil_bDefiningInspectionZone = false;
 bool bDefiningInspectionZone = false;
 POINT mil_DownPointRefMark;
@@ -267,13 +273,16 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		// Choose the smallest of the two multipliers and use it on 
 		// both dimensions so that we maintain a correct aspect ratio
 		mil_Dim_Multiplier = min(XDim_Multiplier, YDim_Multiplier);
-		// mli_CamWindowX_Dim = (int) (((float) (mli_WindowX_Dim - WIDTH_CAMERA_EXCLUDE)) * mil_Dim_Multiplier);
-		// mli_CamWindowY_Dim = (int) (((float) (mli_WindowY_Dim - HEIGHT_CAMERA_EXCLUDE)) * mil_Dim_Multiplier);
 
 		mli_CamWindowX_Dim = (int)(((float)(CANERA_WIDTH)) * mil_Dim_Multiplier);
 		mli_CamWindowY_Dim = (int)(((float)(CANERA_HEIGHT)) * mil_Dim_Multiplier);
 
-		mil_Dim_Conversion = ((float) 1.0) / mil_Dim_Multiplier;
+		// Calc the exact inverse so that screen/image conversions are
+		// correct in both directions
+		mil_Dim_Conversion = ((float) 1.0) + ( 1.0 - mil_Dim_Multiplier);
+
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Window Translate - Mult: %1.6f  Cnvt: %1.6f\n", mil_Dim_Multiplier, mil_Dim_Conversion) > 0))
+			OutputDebugString(mil_DbgMesg);
 
 		mli_CameraHwnd = capCreateCaptureWindow(L"camera window", dwStyle, 301, 0, mli_CamWindowX_Dim, mli_CamWindowY_Dim, hWindow, 0);
 
@@ -503,7 +512,7 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Result from OpenClipboard: %s\n", ((hbmp_image0Bmp != NULL) ? L"Success" : L"Failure")) > 0))
 							OutputDebugString(mil_DbgMesg);
 	#else
-						if (LoadBitmapFromBMPFile(L"Sample2.bmp", &hbmp_image0Bmp, &hPalette))
+						if (LoadBitmapFromBMPFile(L"Sample4.bmp", &hbmp_image0Bmp, &hPalette))
 						{
 							SelectObject(mil_hdcMem, hbmp_image0Bmp);
 						}else{
@@ -585,28 +594,165 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			// ... until later ...
 			// mil_hdcMem = NULL;
 			// hbmp_image0Bmp = NULL;
-			HBRUSH hbr;
+			HBRUSH hbr = NULL;
 			if (!bDrawFoundRefMark)
 			{
-				hbr = CreateSolidBrush(RGB(200, 200, 200));
+				hbr = CreateSolidBrush(RGB(0, 200, 0));
 				for (int iIndex = 0; iIndex < mil_RectsToDraw; iIndex++)
 					FrameRect(hdc_cam, &mil_RectsDefined[iIndex], hbr);
 			}else{
-				hbr = CreateSolidBrush(RGB(200, 0, 0));
-				
-				if( (mil_RectsToDraw > 1) && (mil_ToDraw == 0 ))
+				if (!mil_bRefMarksDrawn)
 				{
-					mil_ToDraw = LocateRefMarks(&mil_RectsDefined[REF_RECTANGLE], hdc_cam );
-					bRefMarkSearched = (mil_ToDraw > 0);
-				}
+					hbr = CreateSolidBrush(RGB(200, 0, 0));
 
-				for (int RectIndex = 0; RectIndex < mil_ToDraw; RectIndex++)
-					FrameRect(hdc_cam, &mil_RefMarkRects[RectIndex], hbr);
+					if ((mil_RectsToDraw > 1) && (mil_ToDraw == 0))
+					{
+						mil_ToDraw = LocateRefMarks(&mil_RectsDefined[REF_RECTANGLE], hdc_cam);
+						bRefMarkSearched = (mil_ToDraw > 0);
+					}
+
+					int ZoneWidth = (mil_RectsDefined[ZONE_RECTANGLE].right - mil_RectsDefined[ZONE_RECTANGLE].left);
+					int ZoneHeight = (mil_RectsDefined[ZONE_RECTANGLE].bottom - mil_RectsDefined[ZONE_RECTANGLE].top);
+
+					for (int RectIndex = 0; RectIndex < mil_ToDraw; RectIndex++)
+					{
+						// Draw a frame around the ref mark
+						FrameRect(hdc_cam, &mil_RefMarkRects[RectIndex], hbr);
+						
+
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"RefMark Rect[%02d] - Left: %04d  Top: %04d Right: %04d Bottom: %04d\n", RectIndex, mil_RefMarkRects[RectIndex].left, mil_RefMarkRects[RectIndex].top, mil_RefMarkRects[RectIndex].right, mil_RefMarkRects[RectIndex].bottom) > 0))
+							OutputDebugString(mil_DbgMesg);
+
+						// Convert the rectangle to the inspection zone
+						// ( Clamp the values to screen image dimensions )
+						mil_RefMarkRects[RectIndex].right = min((int)(mil_RefMarkRects[RectIndex].left + ZoneWidth), (int)(CANERA_WIDTH * mil_Dim_Multiplier));
+						mil_RefMarkRects[RectIndex].bottom = min((int)(mil_RefMarkRects[RectIndex].top + ZoneHeight), (int)(CANERA_HEIGHT * mil_Dim_Multiplier));
+
+						// Draw a frame around the inspection zone
+						FrameRect(hdc_cam, &mil_RefMarkRects[RectIndex], hbr);
+
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone (draw) Rect[%02d] - Left: %04d  Top: %04d Right: %04d Bottom: %04d\n", RectIndex, mil_RefMarkRects[RectIndex].left, mil_RefMarkRects[RectIndex].top, mil_RefMarkRects[RectIndex].right, mil_RefMarkRects[RectIndex].bottom) > 0))
+							OutputDebugString(mil_DbgMesg);
+
+						// Convert the rect to full size image dimensions
+						mil_RefMarkRects[RectIndex].left = (mil_RefMarkRects[RectIndex].left * mil_Dim_Conversion);
+						mil_RefMarkRects[RectIndex].right = (mil_RefMarkRects[RectIndex].right * mil_Dim_Conversion);
+						mil_RefMarkRects[RectIndex].top = (mil_RefMarkRects[RectIndex].top * mil_Dim_Conversion);
+						mil_RefMarkRects[RectIndex].bottom = (mil_RefMarkRects[RectIndex].bottom * mil_Dim_Conversion);
+
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone (full) Rect[%02d] - Left: %04d  Top: %04d Right: %04d Bottom: %04d\n", RectIndex, mil_RefMarkRects[RectIndex].left, mil_RefMarkRects[RectIndex].top, mil_RefMarkRects[RectIndex].right, mil_RefMarkRects[RectIndex].bottom) > 0))
+							OutputDebugString(mil_DbgMesg);
+
+					}
+
+					int FullZoneWidth;
+					int FullZoneHeight;
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Found %02d RefMarks\n", mil_ToDraw) > 0))
+					SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)mil_DbgMesg);
+
+					// Copy Zone Zero Rect to the "Golden Image"
+					if (mil_ToDraw > 0)
+					{
+						FullZoneWidth = (mil_RefMarkRects[0].right - mil_RefMarkRects[0].left);
+						FullZoneHeight = (mil_RefMarkRects[0].bottom - mil_RefMarkRects[0].top);
+						mil_RefImage = (RGBTRIPLE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(RGBTRIPLE) * (FullZoneWidth * FullZoneHeight))));
+
+						if (mil_RefImage != NULL)
+						{
+							RGBTRIPLE *GoldImage = mil_RefImage;
+							RGBTRIPLE *SubImage = (RGBTRIPLE *)mil_pImageBits;
+
+							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GoldImg - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&mil_RefImage[0]), (UINT)(&mil_RefImage[(FullZoneWidth * FullZoneHeight)])) > 0))
+								OutputDebugString(mil_DbgMesg);
+
+							//  Copy the image Row x Row
+							for (int rowIndex = 0; rowIndex < FullZoneHeight; rowIndex++)
+							{
+								// Note that the full size image is flipped around the X axis in memory meaning that Row zero,
+								// Column zero is located at: (RGBTRIPLE *)mil_pImageBits[(CANERA_WIDTH * CANERA_HEIGHT)].
+								// The "Golden Image" is not flipped so Row zero, Column zero is: mil_RefImage[0]
+								// This means the Row addresses (Y values), decrement for the "next" line of the SubImage, while Row
+								// addresses for the Golden Image increment. Column addresses (X values) increment for both images.
+
+								// Point to the beginning of the current row
+								SubImage = (RGBTRIPLE *)mil_pImageBits;
+								SubImage += (CANERA_WIDTH * CANERA_HEIGHT);
+								SubImage -= (mil_RefMarkRects[0].top * CANERA_WIDTH);
+								SubImage += mil_RefMarkRects[0].left;
+								SubImage -= (rowIndex * CANERA_WIDTH);
+
+								if (rowIndex == 0)
+								{
+									RGBTRIPLE * EndAddress = (RGBTRIPLE *)mil_pImageBits;
+									if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&EndAddress[((mil_RefMarkRects[0].top * CANERA_WIDTH) + mil_RefMarkRects[0].left)]), (UINT)(&EndAddress[((mil_RefMarkRects[0].bottom * CANERA_WIDTH) + mil_RefMarkRects[0].right)])) > 0))
+										OutputDebugString(mil_DbgMesg);
+
+									if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone Zero Rect - Left: %4d  Top: %04d Right: %04d Bottom: %04d\n", mil_RefMarkRects[0].left, mil_RefMarkRects[0].top, mil_RefMarkRects[0].right, mil_RefMarkRects[0].bottom) > 0))
+										OutputDebugString(mil_DbgMesg);
+
+								}
+
+								for (int columnIndex = 0; columnIndex < FullZoneWidth; columnIndex++)
+									*GoldImage++ = *SubImage++;
+
+							}
+
+						}
+
+					}
+
+					// Loop through all the inspection zones we've found and write back the average of 
+					// the individula Red Green and Blue values of the two images to the "Golden Image."
+					for (int RectIndex = 1; RectIndex < mil_ToDraw; RectIndex++)
+					{
+						RGBTRIPLE *GoldImage;
+						RGBTRIPLE *FullImage = (RGBTRIPLE *)mil_pImageBits;
+						RGBTRIPLE *SubImage;
+						UINT SubImageHeight = (mil_RefMarkRects[RectIndex].bottom - mil_RefMarkRects[RectIndex].top);
+						UINT SubImageWidth = (mil_RefMarkRects[RectIndex].right - mil_RefMarkRects[RectIndex].left);
+
+						for (int rowIndex = 0; rowIndex < SubImageHeight; rowIndex++)
+						{
+							GoldImage = mil_RefImage;
+							GoldImage += (rowIndex * FullZoneWidth);
+
+							SubImage = FullImage;
+							SubImage += (CANERA_WIDTH * CANERA_HEIGHT);
+							SubImage -= (mil_RefMarkRects[RectIndex].top * CANERA_WIDTH);
+							SubImage += mil_RefMarkRects[RectIndex].left;
+							SubImage -= (rowIndex * CANERA_WIDTH);
+
+							if (rowIndex == 0)
+							{
+								RGBTRIPLE * EndAddress = (RGBTRIPLE *)mil_pImageBits;
+								if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&EndAddress[((mil_RefMarkRects[0].top * CANERA_WIDTH) + mil_RefMarkRects[0].left)]), (UINT)(&EndAddress[((mil_RefMarkRects[0].bottom * CANERA_WIDTH) + mil_RefMarkRects[0].right)])) > 0))
+									OutputDebugString(mil_DbgMesg);
+
+								if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone Zero Rect - Left: %4d  Top: %04d Right: %04d Bottom: %04d\n", mil_RefMarkRects[0].left, mil_RefMarkRects[0].top, mil_RefMarkRects[0].right, mil_RefMarkRects[0].bottom) > 0))
+									OutputDebugString(mil_DbgMesg);
+								 
+							}
+
+							for (int columnIndex = 0; columnIndex < SubImageWidth; columnIndex++)
+							{
+								GoldImage->rgbtRed = ((GoldImage->rgbtRed + SubImage->rgbtRed) >> 1);
+								GoldImage->rgbtGreen = ((GoldImage->rgbtGreen + SubImage->rgbtGreen) >> 1);
+								GoldImage->rgbtBlue = ((GoldImage->rgbtBlue + SubImage->rgbtBlue) >> 1);
+								GoldImage++;
+								SubImage++;
+							}
+						}
+					} 
+					mil_ProcessImage = new ProcessImage((byte *)mil_RefImage, FullZoneWidth, FullZoneHeight, (size_t)FullZoneWidth);
+					mil_bRefMarksDrawn = true;
+				}
 			}
+
 			if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"WM_PAINT %d Rects drawn\n", mil_RectsToDraw) > 0))
 				OutputDebugString(mil_DbgMesg);
-
-			DeleteObject(hbr);
+			if(hbr != NULL)
+				DeleteObject(hbr);
 
 			EndPaint(mli_CameraHwnd, &ps2);
 			// Spin Off thread to do Setup
@@ -1239,8 +1385,8 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 	UINT RefMarksFound = 0;
 	UINT ColumIndex = 0;
 	UINT RowIndex = 0;
-	RGBTRIPLE *rgbColumnValues;
-	RGBTRIPLE *rgbRowValues;
+	RGBTRIPLE *rgbColumnValues = NULL;
+	RGBTRIPLE *rgbRowValues = NULL;
 	UINT NumberOfColumnValues;
 	UINT NumberOfRowValues;
 	RGBTRIPLE *rgbColumnStart;
@@ -1251,8 +1397,10 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 	UINT ImageHeight;
 	UINT RefMarkColumnCount = 0;
 	UINT RefMarkRowCount = 0;
-	UINT *BeginningEndingRows;
-	UINT *BeginningEndingColumns;
+	UINT *BeginningEndingRows = NULL;
+	UINT *BeginningEndingColumns = NULL;
+	UINT *RowsFound = NULL;
+	UINT *ColumnsFound = NULL;
 
 	if(CaptureRect == NULL) 
 		return RefMarksFound;
@@ -1264,17 +1412,19 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 	UINT refMarkBottom = (CaptureRect->bottom * mil_Dim_Conversion);
 	UINT refMarkRight = (CaptureRect->right * mil_Dim_Conversion);
 
-
 	NumberOfColumnValues = ((refMarkBottom) - (refMarkTop));
 	NumberOfRowValues = ((refMarkRight) - (refMarkLeft));
 	ImageWidth = mil_pImageBitMapInfo->bmiHeader.biWidth;
 	ImageHeight = mil_pImageBitMapInfo->bmiHeader.biHeight;
 
+	if ((NumberOfColumnValues == 0) || (NumberOfRowValues == 0))
+		return 0;
+
 	rgbColumnValues = (RGBTRIPLE *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (sizeof(RGBTRIPLE) * NumberOfColumnValues) );
 	rgbRowValues = (RGBTRIPLE *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (sizeof(RGBTRIPLE) * NumberOfRowValues));
 
-	BeginningEndingRows = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageHeight / NumberOfColumnValues)) + 1) );
-	BeginningEndingColumns = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageWidth / NumberOfColumnValues)) + 1));
+	RowsFound = BeginningEndingRows = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageHeight / NumberOfColumnValues)) + 1) );
+	ColumnsFound = BeginningEndingColumns = (UINT *) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(UINT) * (ImageWidth / NumberOfColumnValues)) + 1));
 
 	rgbColumnStart = rgbRowStart = (RGBTRIPLE *) mil_pImageBits;
 
@@ -1292,7 +1442,7 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 		rgbRowValues[iIndex] = rgbRowStart[iIndex];
 
 	// Itterate over each column of pixels that could possibly contain a matching sequence to the reference pixels
-	for (int CurrentColumnIndex = NumberOfRowValues >> 1; CurrentColumnIndex < (ImageWidth - (NumberOfRowValues >> 1)); CurrentColumnIndex++)
+	for (int CurrentColumnIndex = 0; CurrentColumnIndex < (ImageWidth - (NumberOfRowValues >> 1)); CurrentColumnIndex++)
 	{
 		// Point to the beginning pixel of the current column
 		rgbCurrentColumPixel = (RGBTRIPLE *) mil_pImageBits;
@@ -1301,48 +1451,29 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 		for (int CurrentColumnRow = 0; CurrentColumnRow < (ImageHeight - NumberOfColumnValues); CurrentColumnRow++)
 		{
 			// If the value of all the current sequence of pixels matches the refpixels within the tolerance value
-			if (isMatchToRefColumn(rgbColumnValues, rgbCurrentColumPixel, ImageWidth, NumberOfColumnValues, (BYTE) 8) )
+			if (isMatchToRefColumn(rgbColumnValues, rgbCurrentColumPixel, ImageWidth, NumberOfColumnValues, (BYTE) 3) )
 			{
 				RefMarkColumnCount++;
 
 				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Column Found ! - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentColumnIndex, CurrentColumnRow, rgbCurrentColumPixel) > 0))
-				 	OutputDebugString(mil_DbgMesg);
+					OutputDebugString(mil_DbgMesg);
 
-				Graphics graphics(RMarkHandel);
-				Pen      pen(Color(255, 0, 0, 255));
-				graphics.DrawLine(&pen, CurrentColumnIndex, CurrentColumnRow, CurrentColumnIndex, (CurrentColumnRow + NumberOfColumnValues) );
-
-
-				// Record this as the center column of a ref mark   mil_Dim_Conversion - mil_Dim_Multiplier
-				// *BeginningEndingRows = CurrentColumnRow;
+				// Record this as the center column of a ref mark
 				*BeginningEndingRows = (CurrentColumnRow * mil_Dim_Multiplier);
-				CurrentColumnRow += NumberOfColumnValues;
 				BeginningEndingRows++;
-				// *BeginningEndingRows = CurrentColumnRow;
-				*BeginningEndingRows = (CurrentColumnRow * mil_Dim_Multiplier);
+				*BeginningEndingRows = ((CurrentColumnRow + NumberOfColumnValues) * mil_Dim_Multiplier);
 				BeginningEndingRows++;
                 // Jump forward a refmark height in pixels
+				CurrentColumnRow += NumberOfColumnValues;
 				rgbCurrentColumPixel += (ImageWidth * NumberOfColumnValues);
-				// CurrentColumnRow += NumberOfColumnValues;
 			}else{ // Else no match inc to next pixel
 				rgbCurrentColumPixel += ImageWidth;
-				/*
-					COLORREF SetPixel(
-				  _In_ HDC      hdc,
-				  _In_ int      X,
-				  _In_ int      Y,
-				  _In_ COLORREF crColor
-					);	*/
-				// SetPixel(RMarkHandel, CurrentColumnIndex, CurrentColumnRow, RGB(200, 0, 200));
-				// if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Column - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentColumnIndex, CurrentColumnRow, rgbCurrentColumPixel) > 0))
-				// 	OutputDebugString(mil_DbgMesg);
-
 			}
 		}
 	}
 
 	// Itterate over each row of pixels that may possibly contain a matching sequence to the reference pixels
-	for (int CurrentRowIndex = (NumberOfColumnValues >> 1); CurrentRowIndex < (ImageHeight - (NumberOfColumnValues >> 1)); CurrentRowIndex++)
+	for (int CurrentRowIndex = 0; CurrentRowIndex < (ImageHeight - (NumberOfColumnValues >> 1)); CurrentRowIndex++)
 	{
 		// Point to the beginning pixel of the current row
 		rgbCurrentRowPixel = (RGBTRIPLE *) mil_pImageBits;
@@ -1351,35 +1482,23 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 		for (int CurrentRowColumn = 0; CurrentRowColumn < (ImageWidth - NumberOfRowValues); CurrentRowColumn++)
 		{
 			// If all the pixels in rgbRowValues match the current pixels in the image
-			if (isMatchToRefRow(rgbRowValues, rgbCurrentRowPixel, NumberOfRowValues, (BYTE) 8))
+			if (isMatchToRefRow(rgbRowValues, rgbCurrentRowPixel, NumberOfRowValues, (BYTE) 3))
 			{
 				RefMarkRowCount++;
 
 				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Row Found ! - Column Index: %04d  Colum Row: %04d  Address: 0x%08X\n", CurrentRowColumn, CurrentRowIndex, rgbCurrentRowPixel) > 0))
 					OutputDebugString(mil_DbgMesg);
 
-				Graphics graphics(RMarkHandel);
-				Pen      pen(Color(255, 0, 0, 255));
-				graphics.DrawLine(&pen, CurrentRowColumn, CurrentRowIndex, (CurrentRowColumn + NumberOfRowValues), CurrentRowIndex);
-
-
-				// Record this as the left and right side of a reference rectangle  mil_Dim_Conversion - mil_Dim_Multiplier
-				// *BeginningEndingColumns = CurrentRowColumn;
+				// Record this as the left and right side of a reference rectangle 
 				*BeginningEndingColumns = (CurrentRowColumn * mil_Dim_Multiplier);
-				CurrentRowColumn += NumberOfRowValues;
 				BeginningEndingColumns++;
-				// *BeginningEndingColumns = CurrentRowColumn;
-				*BeginningEndingColumns = (CurrentRowColumn * mil_Dim_Multiplier);
+				*BeginningEndingColumns = ((CurrentRowColumn + NumberOfRowValues) * mil_Dim_Multiplier);
 				BeginningEndingColumns++;
 				// Jump forward a refmark width
+				CurrentRowColumn += NumberOfRowValues;
 				rgbCurrentRowPixel += NumberOfRowValues;
-				// CurrentRowColumn += NumberOfRowValues;
 			}else{ // Else no match inc to next pixel
 				rgbCurrentRowPixel++;
-				// SetPixel(RMarkHandel, CurrentRowColumn, CurrentRowIndex, RGB(200, 0, 200));
-				// if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"LocRef Row - Row Index: %04d  Colum: %04d  Address: 0x%08X\n", CurrentRowIndex, CurrentRowColumn, rgbCurrentRowPixel) > 0))
-				//	 OutputDebugString(mil_DbgMesg);
-
 			}
 		}
 	}
@@ -1392,25 +1511,43 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel)
 		BeginningEndingRows -= (RefMarkColumnCount << 1);
 		// Allocate space to store the rects
 		mil_RefMarkRects = (RECT *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(RECT) * (RefMarkRowCount * RefMarkColumnCount))));
+		RECT CandidateRect;
 		if(mil_RefMarkRects != NULL)
 		{
 			for (int iColumnIndex = 0; iColumnIndex < RefMarkColumnCount; iColumnIndex += 2)
 			{
 				for (int iRowIndex = 0; iRowIndex < RefMarkRowCount; iRowIndex += 2)
 				{
-					mil_RefMarkRects[RefMarksFound].left = BeginningEndingColumns[iColumnIndex];
-					mil_RefMarkRects[RefMarksFound].right = BeginningEndingColumns[iColumnIndex + 1];
-					mil_RefMarkRects[RefMarksFound].top = BeginningEndingRows[iRowIndex];
-					mil_RefMarkRects[RefMarksFound].bottom = BeginningEndingRows[iRowIndex + 1];
-					RefMarksFound++;
+					CandidateRect.left = BeginningEndingColumns[iColumnIndex];
+					CandidateRect.right = BeginningEndingColumns[iColumnIndex + 1];
+					CandidateRect.top = BeginningEndingRows[iRowIndex];
+					CandidateRect.bottom = BeginningEndingRows[iRowIndex + 1];
+
+					if (!rectIsDuplicate(mil_RefMarkRects, CandidateRect, RefMarksFound))
+					{
+						mil_RefMarkRects[RefMarksFound].left = CandidateRect.left;
+						mil_RefMarkRects[RefMarksFound].right = CandidateRect.right;
+						mil_RefMarkRects[RefMarksFound].top = CandidateRect.top;
+						mil_RefMarkRects[RefMarksFound].bottom = CandidateRect.bottom;
+						RefMarksFound++;
+
+						if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"RefMark[%02d] - Left: %04d Top: %04d Right: %04d Buttom: %04d\n", RefMarksFound, CandidateRect.left, CandidateRect.top, CandidateRect.right, CandidateRect.bottom) > 0))
+							OutputDebugString(mil_DbgMesg);
+
+					}
 				}
 			}
 		}
 	}
-	HeapFree(GetProcessHeap(), 0, rgbColumnValues );
-	HeapFree(GetProcessHeap(), 0, rgbRowValues);
-	HeapFree(GetProcessHeap(), 0, BeginningEndingRows);
-	HeapFree(GetProcessHeap(), 0, BeginningEndingColumns);
+
+	if (rgbColumnValues != NULL)
+		HeapFree(GetProcessHeap(), 0, rgbColumnValues);
+	if (rgbRowValues != NULL)
+		HeapFree(GetProcessHeap(), 0, rgbRowValues);
+	if (BeginningEndingRows != NULL)
+		HeapFree(GetProcessHeap(), 0, BeginningEndingRows);
+	if (BeginningEndingColumns != NULL)
+		HeapFree(GetProcessHeap(), 0, BeginningEndingColumns);
 
 	return RefMarksFound;
 }
@@ -1453,4 +1590,15 @@ BOOL isMatchToRefRow(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT Numbe
 	return true;
 }
 
+BOOL rectIsDuplicate(RECT *RefMarkRects, RECT Candidate, UINT MarksFound)
+{
+	if( (RefMarkRects == NULL) || (MarksFound == 0) )
+		return false;
 
+	for (int index = 0; index < MarksFound ; index++)
+		if((RefMarkRects[index].left == Candidate.left) && (RefMarkRects[index].right == Candidate.right) && (RefMarkRects[index].top == Candidate.top) && (RefMarkRects[index].bottom == Candidate.bottom) )
+			return TRUE;
+
+	return false;
+	
+}

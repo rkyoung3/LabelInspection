@@ -60,6 +60,34 @@ ProcessImage::ProcessImage(wchar_t *pi_FileName)
 
 }
 
+ProcessImage::ProcessImage(byte *data, int width, int height, size_t stride)
+{
+	/*
+	* Function: cvCreateMat(int rows, int cols, int type)
+	* Parameters:
+	* rows – Number of rows in the matrix
+	* cols – Number of columns in the matrix
+	* type – The type of the matrix elements in the form CV_<bit depth><S|U|F>C<number of channels>, where S=signed, U=unsigned, F=float.
+	* For example: [CV _ 8UC1 means the elements are 8-bit unsigned and the there is 1 channel],
+	* and:         [CV _ 32SC2 means the elements are 32-bit signed and there are 2 channels.
+	*************************************************************************************************************************************/
+
+	// Mat *flipedImage = new Mat(width, height, CV_8UC3);
+	// mat.put(0, 0, data);
+
+	// C++: Mat::Mat(int rows, int cols, int type, void* data, size_t step=AUTO_STEP)
+	// cv::Mat image(height, width, CV_8UC3, data, stride);
+	cv::Mat image(height, width, CV_8UC3, data);
+	cv::Mat flipedImage(height, width, CV_8UC3);
+	// cv::flip(image, flipedImage, 0);
+
+	namedWindow("Golden Image", WINDOW_NORMAL);
+	// imshow("Golden Image", flipedImage);
+	imshow("Golden Image", image);
+	waitKey(0);
+
+
+}
 
 int ProcessImage::FindMark(wchar_t * pi_TemplateName)
 {
