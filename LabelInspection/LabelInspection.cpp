@@ -10,7 +10,10 @@
 * 0.4.0 - 09/13/2016 09:11:15 AM - Implementation of MediaFoundation failed, moving on to processing image
 * 0.5.0 - 10/15/2016 11:06:10 AM - Successfully locate all ref marks on simulated data
 * 0.6.0 - 11/04/2016 12:51:16 AM - Successfully create Golden Image from all ref marks found
-//**************************************************************************************************/
+* 0.7.0 - 11/24/2016 11:18:32 AM - Final Registration Mark version (Changing to border detection).
+* 0.8.0 - 11/27/2016 11:06:18 AM - Begin implementing BorderDetection
+//************************************************************************************************* 
+*/
 
 #include "stdafx.h"
 
@@ -52,6 +55,7 @@ UINT LocateRefMarks(RECT *CaptureRect, HDC RMarkHandel);
 BOOL isMatchToRefColumn(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT Increment, UINT NumberOfValues, BYTE rgbTolerance);
 BOOL isMatchToRefRow(RGBTRIPLE *RefValues, RGBTRIPLE *CandidatePixel, UINT NumberOfValues, BYTE rgbTolerance);
 BOOL rectIsDuplicate(RECT *RefMarkRects, RECT Candidate, UINT MarksFound);
+bool CreateReferenceImage(RGBTRIPLE *FullImage, UINT FullZoneWidth, UINT FullZoneHeight);
 
 HWND mil_hButtonChangeCam;
 HWND mil_hButtonRefImage;
@@ -97,6 +101,7 @@ HBITMAP     hbmp_image0Bmp;       // the bitmap which contains the image we are 
 HPALETTE      hPalette;
 HBITMAP     imageBmpOld;    // the DC's old bitmap (for cleanup)
 HBITMAP     OriginalimageBmp;
+RGBTRIPLE *mil_SubImage;
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -277,8 +282,8 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		mli_CamWindowX_Dim = (int)(((float)(CANERA_WIDTH)) * mil_Dim_Multiplier);
 		mli_CamWindowY_Dim = (int)(((float)(CANERA_HEIGHT)) * mil_Dim_Multiplier);
 
-		// Calc the exact inverse so that screen/image conversions are
-		// correct in both directions
+		// Calc the exact inverse so that screen/image 
+		// conversions are correct in both directions
 		mil_Dim_Conversion = ((float) 1.0) + ( 1.0 - mil_Dim_Multiplier);
 
 		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Window Translate - Mult: %1.6f  Cnvt: %1.6f\n", mil_Dim_Multiplier, mil_Dim_Conversion) > 0))
@@ -289,8 +294,11 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Creating Camera Window: %04d x %04d\n", mli_CamWindowX_Dim, mli_CamWindowY_Dim) > 0))
 			OutputDebugString(mil_DbgMesg);
 
+		// Put the hardware into a known state
 		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
-
+		// In multiple camera environments: Windows insists 
+		// on handeling camera selection it will use whatever 
+		// camera the user selects as camera 0
 		SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 		SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 		SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
@@ -357,6 +365,9 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 					DeleteObject(hbmp_image0Bmp);
 				mil_hdcMem = NULL;
 				hbmp_image0Bmp = NULL;
+				// Put the hardware into a known state
+				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
+
 				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
@@ -450,6 +461,8 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			hbmp_image0Bmp = NULL;
 			HCURSOR hCursor = LoadCursor(NULL, IDC_ARROW);
 			SetCursor(hCursor);
+			// Put the hardware into a known state
+			SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
 			SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 			SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 			SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
@@ -476,6 +489,8 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 			case MENU_BUTTON_CHANGECAM:
 			{
 				SendMessage(mli_CameraHwnd, WM_CAP_DLG_VIDEOSOURCE, 0, 0);
+				// Put the hardware into a known state
+				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_DISCONNECT, 0, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_DRIVER_CONNECT, 0, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_SCALE, true, 0);
 				SendMessage(mli_CameraHwnd, WM_CAP_SET_PREVIEWRATE, 66, 0);
@@ -652,98 +667,13 @@ LRESULT CALLBACK WndProc(HWND hWindow, UINT WndMessage, WPARAM wParam, LPARAM lP
 					SendMessage(hUserMsg, WM_SETTEXT, NULL, (LPARAM)mil_DbgMesg);
 
 					// Copy Zone Zero Rect to the "Golden Image"
-					if (mil_ToDraw > 0)
-					{
-						FullZoneWidth = (mil_RefMarkRects[0].right - mil_RefMarkRects[0].left);
-						FullZoneHeight = (mil_RefMarkRects[0].bottom - mil_RefMarkRects[0].top);
-						mil_RefImage = (RGBTRIPLE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(RGBTRIPLE) * (FullZoneWidth * FullZoneHeight))));
+					FullZoneWidth = (mil_RefMarkRects[0].right - mil_RefMarkRects[0].left);
+					FullZoneHeight = (mil_RefMarkRects[0].bottom - mil_RefMarkRects[0].top);
+					mil_RefImage = (RGBTRIPLE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ((sizeof(RGBTRIPLE) * (FullZoneWidth * FullZoneHeight))));
 
-						if (mil_RefImage != NULL)
-						{
-							RGBTRIPLE *GoldImage = mil_RefImage;
-							RGBTRIPLE *SubImage = (RGBTRIPLE *)mil_pImageBits;
+					InitializeGoldenImage(mil_RefImage, (RGBTRIPLE *) mil_pImageBits, FullZoneWidth, FullZoneHeight);
+					CreateReferenceImage((RGBTRIPLE *) mil_pImageBits, FullZoneWidth, FullZoneHeight);
 
-							if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GoldImg - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&mil_RefImage[0]), (UINT)(&mil_RefImage[(FullZoneWidth * FullZoneHeight)])) > 0))
-								OutputDebugString(mil_DbgMesg);
-
-							//  Copy the image Row x Row
-							for (int rowIndex = 0; rowIndex < FullZoneHeight; rowIndex++)
-							{
-								// Note that the full size image is flipped around the X axis in memory meaning that Row zero,
-								// Column zero is located at: (RGBTRIPLE *)mil_pImageBits[(CANERA_WIDTH * CANERA_HEIGHT)].
-								// The "Golden Image" is not flipped so Row zero, Column zero is: mil_RefImage[0]
-								// This means the Row addresses (Y values), decrement for the "next" line of the SubImage, while Row
-								// addresses for the Golden Image increment. Column addresses (X values) increment for both images.
-
-								// Point to the beginning of the current row
-								SubImage = (RGBTRIPLE *)mil_pImageBits;
-								SubImage += (CANERA_WIDTH * CANERA_HEIGHT);
-								SubImage -= (mil_RefMarkRects[0].top * CANERA_WIDTH);
-								SubImage += mil_RefMarkRects[0].left;
-								SubImage -= (rowIndex * CANERA_WIDTH);
-
-								if (rowIndex == 0)
-								{
-									RGBTRIPLE * EndAddress = (RGBTRIPLE *)mil_pImageBits;
-									if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&EndAddress[((mil_RefMarkRects[0].top * CANERA_WIDTH) + mil_RefMarkRects[0].left)]), (UINT)(&EndAddress[((mil_RefMarkRects[0].bottom * CANERA_WIDTH) + mil_RefMarkRects[0].right)])) > 0))
-										OutputDebugString(mil_DbgMesg);
-
-									if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone Zero Rect - Left: %4d  Top: %04d Right: %04d Bottom: %04d\n", mil_RefMarkRects[0].left, mil_RefMarkRects[0].top, mil_RefMarkRects[0].right, mil_RefMarkRects[0].bottom) > 0))
-										OutputDebugString(mil_DbgMesg);
-
-								}
-
-								for (int columnIndex = 0; columnIndex < FullZoneWidth; columnIndex++)
-									*GoldImage++ = *SubImage++;
-
-							}
-
-						}
-
-					}
-
-					// Loop through all the inspection zones we've found and write back the average of 
-					// the individula Red Green and Blue values of the two images to the "Golden Image."
-					for (int RectIndex = 1; RectIndex < mil_ToDraw; RectIndex++)
-					{
-						RGBTRIPLE *GoldImage;
-						RGBTRIPLE *FullImage = (RGBTRIPLE *)mil_pImageBits;
-						RGBTRIPLE *SubImage;
-						UINT SubImageHeight = (mil_RefMarkRects[RectIndex].bottom - mil_RefMarkRects[RectIndex].top);
-						UINT SubImageWidth = (mil_RefMarkRects[RectIndex].right - mil_RefMarkRects[RectIndex].left);
-
-						for (int rowIndex = 0; rowIndex < SubImageHeight; rowIndex++)
-						{
-							GoldImage = mil_RefImage;
-							GoldImage += (rowIndex * FullZoneWidth);
-
-							SubImage = FullImage;
-							SubImage += (CANERA_WIDTH * CANERA_HEIGHT);
-							SubImage -= (mil_RefMarkRects[RectIndex].top * CANERA_WIDTH);
-							SubImage += mil_RefMarkRects[RectIndex].left;
-							SubImage -= (rowIndex * CANERA_WIDTH);
-
-							if (rowIndex == 0)
-							{
-								RGBTRIPLE * EndAddress = (RGBTRIPLE *)mil_pImageBits;
-								if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&EndAddress[((mil_RefMarkRects[0].top * CANERA_WIDTH) + mil_RefMarkRects[0].left)]), (UINT)(&EndAddress[((mil_RefMarkRects[0].bottom * CANERA_WIDTH) + mil_RefMarkRects[0].right)])) > 0))
-									OutputDebugString(mil_DbgMesg);
-
-								if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone Zero Rect - Left: %4d  Top: %04d Right: %04d Bottom: %04d\n", mil_RefMarkRects[0].left, mil_RefMarkRects[0].top, mil_RefMarkRects[0].right, mil_RefMarkRects[0].bottom) > 0))
-									OutputDebugString(mil_DbgMesg);
-								 
-							}
-
-							for (int columnIndex = 0; columnIndex < SubImageWidth; columnIndex++)
-							{
-								GoldImage->rgbtRed = ((GoldImage->rgbtRed + SubImage->rgbtRed) >> 1);
-								GoldImage->rgbtGreen = ((GoldImage->rgbtGreen + SubImage->rgbtGreen) >> 1);
-								GoldImage->rgbtBlue = ((GoldImage->rgbtBlue + SubImage->rgbtBlue) >> 1);
-								GoldImage++;
-								SubImage++;
-							}
-						}
-					} 
 					mil_ProcessImage = new ProcessImage((byte *)mil_RefImage, FullZoneWidth, FullZoneHeight, (size_t)FullZoneWidth);
 					mil_bRefMarksDrawn = true;
 				}
@@ -806,6 +736,153 @@ INT_PTR CALLBACK About(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     }
     return (INT_PTR)FALSE;
+}
+
+bool InitializeGoldenImage(RGBTRIPLE *GoldImage, RGBTRIPLE *FirstImage, UINT FullZoneWidth, UINT FullZoneHeight )
+{
+	if (mil_RefImage != NULL)
+	{
+
+		if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"GoldImg - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&mil_RefImage[0]), (UINT)(&mil_RefImage[(FullZoneWidth * FullZoneHeight)])) > 0))
+			OutputDebugString(mil_DbgMesg);
+
+		//  Copy the image Row x Row
+		for (int rowIndex = 0; rowIndex < FullZoneHeight; rowIndex++)
+		{
+			// Note that the full size image is flipped around the X axis in memory meaning that Row zero,
+			// Column zero is located at: (RGBTRIPLE *)mil_pImageBits[(CANERA_WIDTH * CANERA_HEIGHT)].
+			// The "Golden Image" is not flipped so Row zero, Column zero is: mil_RefImage[0]
+			// This means the Row addresses (Y values), decrement for the "next" line of the SubImage, while Row
+			// addresses for the Golden Image increment. Column addresses (X values) increment for both images.
+
+			// Point to the beginning of the current row
+			mil_SubImage = (RGBTRIPLE *)mil_pImageBits;
+			// SubImage += (CANERA_WIDTH * CANERA_HEIGHT);
+			mil_SubImage += (CANERA_WIDTH * (CANERA_HEIGHT - 1));
+			mil_SubImage -= (mil_RefMarkRects[0].top * CANERA_WIDTH);
+			mil_SubImage += mil_RefMarkRects[0].left;
+			mil_SubImage -= (rowIndex * CANERA_WIDTH);
+
+			if (rowIndex == 0)
+			{
+				RGBTRIPLE * EndAddress = (RGBTRIPLE *)mil_pImageBits;
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(&EndAddress[((mil_RefMarkRects[0].top * CANERA_WIDTH) + mil_RefMarkRects[0].left)]), (UINT)(&EndAddress[((mil_RefMarkRects[0].bottom * CANERA_WIDTH) + mil_RefMarkRects[0].right)])) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+				if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone Zero Rect - Left: %4d  Top: %04d Right: %04d Bottom: %04d\n", mil_RefMarkRects[0].left, mil_RefMarkRects[0].top, mil_RefMarkRects[0].right, mil_RefMarkRects[0].bottom) > 0))
+					OutputDebugString(mil_DbgMesg);
+
+			}
+
+			for (int columnIndex = 0; columnIndex < FullZoneWidth; columnIndex++)
+				*GoldImage++ = *mil_SubImage++;
+
+		}
+
+	}
+
+}
+
+// }
+
+
+bool CreateReferenceImage(RGBTRIPLE *GoldImage, RGBTRIPLE *FullImage, RECT SubImageRect, UINT FullZoneWidth, UINT FullZoneHeight)
+{
+	
+	// Loop through all the inspection zones we've found and write back the average of 
+	// the individula Red Green and Blue values of the two images to the "Golden Image."
+	
+	RGBTRIPLE * EndAddress;
+	RGBTRIPLE *FullEndAddress;
+	RGBTRIPLE *FullStartAddress;
+	RGBTRIPLE *SubEndAddress;
+	RGBTRIPLE *SubStartAddress;
+	RGBTRIPLE *GoldEndAddress = &mil_RefImage[FullZoneWidth * FullZoneHeight];
+	RGBTRIPLE *GoldStartAddress = mil_RefImage;
+
+	// Loop through all the full and partial inspection zones we've found
+	for (int RectIndex = 1; RectIndex < mil_ToDraw; RectIndex++)
+	{
+		RGBTRIPLE *GoldImage;
+		// RGBTRIPLE *FullImage = (RGBTRIPLE *)mil_pImageBits;
+		
+		UINT SubImageHeight = (mil_RefMarkRects[RectIndex].bottom - mil_RefMarkRects[RectIndex].top);
+		UINT SubImageWidth = (mil_RefMarkRects[RectIndex].right - mil_RefMarkRects[RectIndex].left);
+
+		// Deal with the image row x row first
+		for (int rowIndex = 0; rowIndex < (SubImageHeight - 1); rowIndex++)
+		{
+			RGBTRIPLE *Dest = GoldImage;
+			// Init pointer to Ref Image
+			Dest = GoldImage;					// Point to beginning
+			Dest += (rowIndex * FullZoneWidth);	// Increment to current row
+
+			RGBTRIPLE *SubImage;
+			SubImage = (RGBTRIPLE *)FullImage;
+			// The image is flipped around the X axis in memory (but Not the Y axis). 
+			// so the "last line" in the negative domain is camera height - 1
+			SubImage += (CANERA_WIDTH * (CANERA_HEIGHT - 1));				// Point to last line
+			SubImage -= (mil_RefMarkRects[RectIndex].top * CANERA_WIDTH);	// Decrement to the top of the sub-image
+			SubImage += mil_RefMarkRects[RectIndex].left;					// Move pointer to column zero
+			SubImage -= (rowIndex * CANERA_WIDTH);							// Decrement to the current line
+
+
+			RGBTRIPLE *EndAddress = (RGBTRIPLE *)mil_pImageBits;
+			RGBTRIPLE *FullEndAddress = &EndAddress[(CANERA_WIDTH * CANERA_HEIGHT)]; //  Note We're pointing to the first address _after_ the last valid pixel
+			// The above is is the first addresss past the last valid pixel in the image 
+			// [-*- You can't increment this address in the X direction and write to it ! -*-]
+			RGBTRIPLE *FullStartAddress = (RGBTRIPLE *)mil_pImageBits;
+			int RectIndex = 0;
+			// These are just diagnostic variables for diagnosing boundry conditions and access violations [Delete From Release ver]
+			RGBTRIPLE *SubEndAddress = &EndAddress[((mil_RefMarkRects[RectIndex].bottom * CANERA_WIDTH) + mil_RefMarkRects[RectIndex].right)];		// WRT - Top and bottom start and end are somewhat "subjective" but the
+			RGBTRIPLE *SubStartAddress = &EndAddress[((mil_RefMarkRects[RectIndex].top * CANERA_WIDTH) + mil_RefMarkRects[RectIndex].left)];		// important thing is we are noting the correct addresses involved
+
+
+			for(int columnIndex = 0; columnIndex < (SubImageWidth); columnIndex++)
+			{
+				// Print diagnostic message if we're at the beginning of a line
+				if ((rowIndex == 0) && (columnIndex == 0))
+				{
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"FullImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(FullStartAddress), (UINT)(FullEndAddress)) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImage - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(SubStartAddress), (UINT)(SubEndAddress)) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"SubImagCalc - ImageStart: 0x%08X  ImageEnd: 0x%08X\n", (UINT)(SubImage), (UINT)(&SubImage[SubImageWidth])) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+					if ((swprintf_s(mil_DbgMesg, (size_t)MAX_PATH, L"Inspect zone[%02d]  Rect - Left: %04d  Top: %04d Right: %04d Bottom: %04d\n", RectIndex, mil_RefMarkRects[RectIndex].left, mil_RefMarkRects[RectIndex].top, mil_RefMarkRects[RectIndex].right, mil_RefMarkRects[RectIndex].bottom) > 0))
+						OutputDebugString(mil_DbgMesg);
+
+				}
+
+
+				Dest->rgbtRed = ((GoldImage->rgbtRed + SubImage->rgbtRed) >> 1);
+				Dest->rgbtGreen = ((GoldImage->rgbtGreen + SubImage->rgbtGreen) >> 1);
+				Dest->rgbtBlue = ((GoldImage->rgbtBlue + SubImage->rgbtBlue) >> 1);
+				Dest++;
+				SubImage++;
+
+				// if( (SubImage < FullStartAddress) || (SubImage < SubStartAddress) || (SubImage > FullEndAddress) || (SubImage > SubEndAddress) )
+				if (SubImage < FullStartAddress)
+					SubImage++;
+
+				if (SubImage > FullEndAddress)
+					SubImage--;
+
+				if (GoldImage < GoldStartAddress)
+					GoldImage++;
+
+				if (GoldImage > GoldEndAddress)
+					GoldImage--;
+
+
+			}
+		}
+	}
+
 }
 
 bool CreateBMPFile(HWND hwnd, LPTSTR pszFile, PBITMAPINFO pbi, HBITMAP hBMP, HDC hDC)
